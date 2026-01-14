@@ -47,6 +47,22 @@ INTERACTIVE_FLAGS = {"-p", "--patch", "-i", "--interactive"}
 
 
 def sanitize_text(s: str) -> str:
+    """
+    Sanitizes the input text by replacing occurrences of secret patterns
+    with the string "[REDACTED]".
+
+    This function iterates through a list of pre-defined secret patterns
+    and substitutes any matched segments in the given text with a redacted
+    indicator, thereby eliminating sensitive information from the input
+    text.
+
+    Args:
+        s: The input string that may contain sensitive information.
+
+    Returns:
+        A new string where all occurrences of secret patterns are
+        replaced with "[REDACTED]".
+    """
     out = s
     for pat in SECRET_PATTERNS:
         out = pat.sub("[REDACTED]", out)
@@ -54,6 +70,26 @@ def sanitize_text(s: str) -> str:
 
 
 def run_git(args: List[str]) -> str:
+    """
+    Runs a Git command with the specified arguments and returns the output.
+
+    This function executes a Git command by combining "git" with the
+    provided list of arguments. It captures the standard output and
+    standard error of the command execution. If the Git command fails,
+    it raises a RuntimeError with the error message from the command.
+
+    Parameters:
+        args: List of strings representing the arguments to pass to
+        the Git command.
+
+    Returns:
+        The standard output of the Git command as a string.
+
+    Raises:
+        RuntimeError: If the Git command fails to execute successfully,
+        an error message is provided from the standard error of the
+        command.
+    """
     p = subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip() or "git command failed")
@@ -61,6 +97,21 @@ def run_git(args: List[str]) -> str:
 
 
 def inside_git_repo() -> bool:
+    """
+    Determines if the current directory is inside a Git repository.
+
+    This function executes a Git command to check if the current directory
+    is within a Git working tree. It attempts to run the 'rev-parse
+    --is-inside-work-tree' command using a helper function 'run_git'.
+    If the command executes successfully, it returns True, indicating
+    that the directory is inside a Git repository. If an exception is
+    caught, it returns False, indicating that the directory is not part
+    of a Git repository.
+
+    Returns:
+        bool: True if the current directory is inside a Git repository,
+        otherwise False.
+    """
     try:
         run_git(["rev-parse", "--is-inside-work-tree"])
         return True
@@ -70,8 +121,23 @@ def inside_git_repo() -> bool:
 
 def split_lang_arg(argv: List[str]) -> Tuple[str, List[str]]:
     """
-    Extracts --lang <code> from argv and returns (lang, remaining_args).
-    If multiple --lang occurrences exist, last one wins.
+    Splits language argument from a list of arguments.
+
+    This function processes command-line arguments to separate out a language
+    specification if present. By default, it assumes the language is 'en'
+    (English) unless the "--lang" option is provided followed by another
+    language code.
+
+    Args:
+        argv: A list of strings representing command-line arguments.
+
+    Returns:
+        A tuple containing the language code specified or the default 'en', and
+        a list of the remaining arguments.
+
+    Raises:
+        SystemExit: If the "--lang" option is provided without an accompanying
+        value.
     """
     lang = "en"
     out: List[str] = []
@@ -88,10 +154,6 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str]]:
     return lang, out
 
 
-def has_flag(args: List[str], flag: str) -> bool:
-    return flag in args
-
-
 def detect_pathspec(args: List[str]) -> List[str]:
     """
     Best-effort parsing of pathspec(s):
@@ -105,6 +167,20 @@ def detect_pathspec(args: List[str]) -> List[str]:
 
 
 def should_not_autogenerate(args: List[str]) -> bool:
+    """
+    Determines if autogeneration should be bypassed based on the presence of
+    specific flags or options in the arguments. It checks for interactive
+    flags, message control flags, and certain message-providing options
+    that would override default behavior.
+
+    Parameters:
+    args: List[str]
+        A list of argument strings to evaluate.
+
+    Returns:
+    bool
+        True if autogeneration should not occur, False otherwise.
+    """
     # If user explicitly requested message behavior or interactive staging, do not autogenerate.
     if any(a in INTERACTIVE_FLAGS for a in args):
         return True
@@ -173,6 +249,26 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
 
 
 def system_instructions(lang_code: str) -> str:
+    """
+    Generates guidelines for creating git commit messages in a specified language.
+
+    This function provides instructions for writing effective git commit messages
+    in the language specified by the language code. It retrieves the full language
+    name based on the provided code and constructs a set of rules that dictate
+    the format and content of the commit message, emphasizing conciseness and
+    clarity on the changes made and their purposes.
+
+    Parameters:
+        lang_code: str
+            The code representing the language in which the commit message
+            should be written.
+
+    Returns:
+        str
+            A string containing instructions tailored for writing a git
+            commit message in the specified language, including formatting
+            and content guidelines.
+    """
     lang_name = LANG_NAMES.get(lang_code.lower())
     lang_line = f"Write the commit message in {lang_name}." if lang_name else f"Write the commit message in language code '{lang_code}'."
 
@@ -187,6 +283,22 @@ def system_instructions(lang_code: str) -> str:
 
 
 def call_ollama(system: str, user: str, timeout_s: int = 25) -> str:
+    """
+    Makes a call to the Ollama API chat endpoint to interact with a model using
+    specified system and user messages. Returns the response from the model
+    as a string. The function constructs a JSON payload and sends an HTTP POST
+    request with the specified system and user messages. It waits for a response
+    within a specified timeout period. The response message content, if available,
+    is stripped of leading and trailing whitespace before being returned.
+
+    Parameters:
+    system: The system message to include in the payload.
+    user: The user message to include in the payload.
+    timeout_s: The timeout in seconds for the API call. Defaults to 25.
+
+    Returns:
+    The content of the response message from the API, as a stripped string.
+    """
     url = f"{OLLAMA_HOST}/api/chat"
     payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"temperature": 0.2}, }
@@ -199,6 +311,20 @@ def call_ollama(system: str, user: str, timeout_s: int = 25) -> str:
 
 
 def extract_openai_text(j: dict) -> str:
+    """
+    Extracts and returns textual content from a given dictionary. The function
+    prioritizes the "output_text" key if it exists and is a non-empty string. If
+    not, it will parse the "output" key if it is a list, looking for items
+    where the type is "message" and the role is "assistant". It then compiles
+    text content from these items if they are of type "output_text" or "text".
+
+    Args:
+        j: Dictionary containing potential text elements to extract.
+
+    Returns:
+        A string containing the extracted text content. If no appropriate content
+        is found, an empty string is returned.
+    """
     if isinstance(j.get("output_text"), str) and j["output_text"].strip():
         return j["output_text"].strip()
 
@@ -222,6 +348,20 @@ def extract_openai_text(j: dict) -> str:
 
 
 def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
+    """
+    Call the OpenAI API to generate a response based on provided system instructions
+    and user input. The function constructs a request with a specified timeout, sends
+    it to the OpenAI service, and returns the text output from the response. If the API
+    key is not set or if the response does not include text output, a RuntimeError is raised.
+
+    Parameters:
+        system (str): The instructions for the OpenAI model to follow.
+        user (str): The user input to be processed by the OpenAI model.
+        timeout_s (int): The timeout for the API request in seconds. Defaults to 25.
+
+    Returns:
+        str: The text output from the OpenAI response.
+    """
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -240,6 +380,9 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
 
 
 def normalize_message(msg: str) -> str:
+    """
+
+    """
     s = msg.strip()
     s = re.sub(r"^\s*```.*?\n", "", s)
     s = re.sub(r"\n\s*```\s*$", "", s)
@@ -261,6 +404,24 @@ def normalize_message(msg: str) -> str:
 
 
 def message_to_git_m_args(msg: str) -> List[str]:
+    """
+    Converts a commit message into a list of Git command-line arguments.
+
+    This function takes a commit message string, splits it into subject and
+    body, and formats it into a list that can be used as command-line
+    arguments for Git commit commands. The subject is the first line of
+    the message, and the body comprises the rest of the lines.
+
+    Parameters:
+        msg: The commit message to convert. It should be in standard Git
+        message format, where the first line is the subject and subsequent
+        lines form the body.
+
+    Returns:
+        A list of strings suitable for use as arguments in a Git commit
+        command, with each line converted into a separate command-line
+        argument preceded by '-m'.
+    """
     lines = msg.splitlines()
     subject = lines[0].strip()
     body = "\n".join(lines[1:]).strip()
@@ -271,6 +432,21 @@ def message_to_git_m_args(msg: str) -> List[str]:
 
 
 def main() -> int:
+    """
+    Main entry point for the application to automatically generate a git commit message.
+
+    This function checks if the user is inside a Git repository and processes the
+    command-line arguments to determine the mode of operation. If automatic
+    commit message generation is deemed appropriate, it attempts to generate a
+    commit message using either the Ollama service first, or falls back to
+    using OpenAI if needed.
+
+    Return:
+        int: The exit code indicating the result of the operation; returns 2 if not
+        inside a Git repository or if context building fails, 3 if message
+        generation fails, otherwise returns the subprocess return code from
+        Git commands.
+    """
     if not inside_git_repo():
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 2
@@ -320,7 +496,7 @@ def main() -> int:
         print("LLMCommit: failed to generate a commit message.", file=sys.stderr)
         return 3
 
-    # Inject message into git commit args.
+    # Inject the message into git commit args.
     final_args = [*git_args, *message_to_git_m_args(msg)]
     p = subprocess.run(["git", "commit", *final_args])
     return p.returncode
