@@ -366,7 +366,10 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
     url = f"{OPENAI_BASE_URL}/v1/responses"
-    payload = {"model": OPENAI_MODEL, "instructions": system, "input": user, "temperature": 0.2, "max_output_tokens": 220, "store": False, }
+    payload = {"model": OPENAI_MODEL, "instructions": system, "input": user, "max_output_tokens": 220, "store": False, }
+    # o1/o3 series and other reasoning models don't support temperature
+    if not re.match(r"^o[0-9]", OPENAI_MODEL):
+        payload["temperature"] = 0.2
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
