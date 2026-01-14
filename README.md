@@ -201,3 +201,52 @@ llmcommit --dry-run
 **OpenAI fallback fails**
 
 * Ensure `OPENAI_API_KEY` is set in your environment.
+
+**SSL Certificate Error: "certificate verify failed: unable to get local issuer certificate"**
+
+This error occurs when Python cannot verify SSL certificates for HTTPS connections. It is **most common on macOS** but can also occur on Linux (especially in Docker containers or minimal installations) and occasionally on Windows in corporate environments with custom certificates.
+
+*macOS fix (most common):*
+
+Python installations from python.org on macOS don't use the system certificate store by default. Run the certificate installer that came with your Python installation:
+
+```bash
+# For Python installed from python.org (adjust version number as needed)
+/Applications/Python\ 3.12/Install\ Certificates.command
+```
+
+Or if you use Homebrew/pyenv Python:
+
+```bash
+pip3 install --upgrade certifi
+```
+
+*Linux fix:*
+
+Install the CA certificates package:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install ca-certificates
+
+# Fedora/RHEL
+sudo dnf install ca-certificates
+
+# Alpine (common in Docker)
+apk add ca-certificates
+```
+
+*Windows fix:*
+
+This is rare on Windows since Python uses the Windows certificate store. If it occurs in a corporate environment, contact your IT department about installing the corporate root certificates.
+
+*Temporary workaround (not recommended for production):*
+
+If you need a quick fix and trust your network, you can disable SSL verification:
+
+```bash
+export PYTHONHTTPSVERIFY=0
+llmcommit -a
+```
+
+**Warning:** This disables SSL verification for all Python HTTPS requests in that session, which is a security risk on untrusted networks.
