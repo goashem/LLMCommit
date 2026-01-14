@@ -204,11 +204,14 @@ llmcommit --dry-run
 
 **SSL Certificate Error: "certificate verify failed: unable to get local issuer certificate"**
 
-This error occurs when Python cannot verify SSL certificates for HTTPS connections. It is **most common on macOS** but can also occur on Linux (especially in Docker containers or minimal installations) and occasionally on Windows in corporate environments with custom certificates.
+This error occurs when Python cannot verify SSL certificates for HTTPS connections. It is **most common on macOS** but
+can also occur on Linux (especially in Docker containers or minimal installations) and occasionally on Windows in
+corporate environments with custom certificates.
 
 *macOS fix (most common):*
 
-Python installations from python.org on macOS don't use the system certificate store by default. Run the certificate installer that came with your Python installation:
+Python installations from python.org on macOS don't use the system certificate store by default. Run the certificate
+installer that came with your Python installation:
 
 ```bash
 # For Python installed from python.org (adjust version number as needed)
@@ -238,7 +241,8 @@ apk add ca-certificates
 
 *Windows fix:*
 
-This is rare on Windows since Python uses the Windows certificate store. If it occurs in a corporate environment, contact your IT department about installing the corporate root certificates.
+This is rare on Windows since Python uses the Windows certificate store. If it occurs in a corporate environment,
+contact your IT department about installing the corporate root certificates.
 
 *Temporary workaround (not recommended for production):*
 
@@ -249,4 +253,5 @@ export PYTHONHTTPSVERIFY=0
 llmcommit -a
 ```
 
-**Warning:** This disables SSL verification for all Python HTTPS requests in that session, which is a security risk on untrusted networks.
+**Warning:** This disables SSL verification for all Python HTTPS requests in that session, which is a security risk on
+untrusted networks.
