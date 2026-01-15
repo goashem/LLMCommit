@@ -7,6 +7,8 @@
 #   LLMCommit --dry-run
 #   LLMCommit --addall
 #   LLMCommit -a --addall
+#   LLMCommit --push
+#   LLMCommit -a --push
 #
 # Env vars:
 #   OLLAMA_HOST=http://localhost:11434
@@ -130,21 +132,22 @@ def inside_git_repo() -> bool:
         return False
 
 
-def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool]:
+def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool]:
     """
-    Splits language argument from a list of arguments and detects --addall flag.
+    Splits language argument from a list of arguments and detects --addall and --push flags.
 
     This function processes command-line arguments to separate out a language
     specification if present. By default, it assumes the language is 'en'
     (English) unless the "--lang" option is provided followed by another
-    language code. It also detects the --addall flag.
+    language code. It also detects the --addall and --push flags.
 
     Args:
         argv: A list of strings representing command-line arguments.
 
     Returns:
-        A tuple containing the language code specified or the default 'en', 
-        a list of the remaining arguments, and a boolean indicating if --addall was specified.
+        A tuple containing the language code specified or the default 'en',
+        a list of the remaining arguments, a boolean indicating if --addall was specified,
+        and a boolean indicating if --push was specified.
 
     Raises:
         SystemExit: If the "--lang" option is provided without an accompanying
@@ -152,6 +155,7 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool]:
     """
     lang = "en"
     addall = False
+    push = False
     out: List[str] = []
     i = 0
     while i < len(argv):
@@ -165,9 +169,13 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool]:
             addall = True
             i += 1
             continue
+        elif argv[i] == "--push":
+            push = True
+            i += 1
+            continue
         out.append(argv[i])
         i += 1
-    return lang, out, addall
+    return lang, out, addall, push
 
 
 def detect_pathspec(args: List[str]) -> List[str]:
@@ -516,8 +524,8 @@ def main() -> int:
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 2
 
-    lang, git_args, addall = split_lang_arg(sys.argv[1:])
-    debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}")
+    lang, git_args, addall, push = split_lang_arg(sys.argv[1:])
+    debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}, push: {push}")
 
     # If --addall is specified, add all untracked files that are not in .gitignore
     if addall:
@@ -538,6 +546,10 @@ def main() -> int:
     if should_not_autogenerate(git_args):
         debug_log("Skipping autogeneration, passing through to git")
         p = subprocess.run(["git", "commit", *git_args])
+        if push and p.returncode == 0:
+            debug_log("Pushing to remote...")
+            push_result = subprocess.run(["git", "push"])
+            return push_result.returncode
         return p.returncode
 
     # Build prompt from what will be committed.
@@ -592,6 +604,13 @@ def main() -> int:
     final_args = [*git_args, *message_to_git_m_args(msg)]
     debug_log(f"Final git commit args: {final_args}")
     p = subprocess.run(["git", "commit", *final_args])
+
+    # Push if --push was specified and commit succeeded
+    if push and p.returncode == 0:
+        debug_log("Pushing to remote...")
+        push_result = subprocess.run(["git", "push"])
+        return push_result.returncode
+
     return p.returncode
 
 

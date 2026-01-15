@@ -3,10 +3,11 @@
 `llmcommit` is a small wrapper around `git commit` that generates the commit message automatically from the changes
 being committed.
 
-It behaves like `git commit` (it forwards the usual `git commit` arguments) and adds one extra option:
+It behaves like `git commit` (it forwards the usual `git commit` arguments) and adds extra options:
 
 * `--lang <code>`: language for the generated message (default: `en`, e.g. `fi`)
 * `--addall`: add all untracked files (not in .gitignore) before committing
+* `--push`: push to remote after a successful commit
 
 Example:
 
@@ -177,6 +178,12 @@ llmcommit --amend
 
 # Dry run
 llmcommit --dry-run
+
+# Commit and push to remote
+llmcommit --push
+
+# Commit all tracked changes and push
+llmcommit -a --push
 ```
 
 **Notes:**
