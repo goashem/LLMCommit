@@ -2,3 +2,14 @@
 /CLAUDE.md
 /AGENTS.md
 /.idea/
+node_modules/
+dist/
+build/
+coverage/
+.venv/
+*.log
+*.png
+*.jpg
+*.mp4
+**/*.min.js
+

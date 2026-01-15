@@ -6,6 +6,7 @@ being committed.
 It behaves like `git commit` (it forwards the usual `git commit` arguments) and adds one extra option:
 
 * `--lang <code>`: language for the generated message (default: `en`, e.g. `fi`)
+* `--addall`: add all untracked files (not in .gitignore) before committing
 
 Example:
 
@@ -165,6 +166,12 @@ llmcommit
 # Commit all tracked changes (like git commit -a), message in Finnish
 llmcommit -a --lang fi
 
+# Add all untracked files and commit with generated message
+llmcommit --addall
+
+# Add all untracked files and commit all tracked changes with generated message
+llmcommit -a --addall
+
 # Amend last commit (message generated from the amended diff)
 llmcommit --amend
 
@@ -190,6 +197,7 @@ llmcommit --dry-run
 
 * If you want staged commits: `git add -A` then `llmcommit`
 * If you want commit-all: use `llmcommit -a`
+* If you want to add all untracked files and commit: use `llmcommit --addall`
 
 **Ollama failures / slow responses**
 

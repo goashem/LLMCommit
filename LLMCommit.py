@@ -5,6 +5,8 @@
 #   LLMCommit -a --lang fi
 #   LLMCommit --amend
 #   LLMCommit --dry-run
+#   LLMCommit --addall
+#   LLMCommit -a --addall
 #
 # Env vars:
 #   OLLAMA_HOST=http://localhost:11434
@@ -30,6 +32,15 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
+
+DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+def debug_log(msg: str) -> None:
+    """Print debug message to stderr if DEBUG is enabled."""
+    if DEBUG:
+        print(f"[DEBUG] {msg}", file=sys.stderr)
+
 
 # Best-effort: avoid sending obvious secrets in diffs.
 SECRET_PATTERNS = [re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?-----END .*?PRIVATE KEY-----", re.DOTALL),
@@ -119,27 +130,28 @@ def inside_git_repo() -> bool:
         return False
 
 
-def split_lang_arg(argv: List[str]) -> Tuple[str, List[str]]:
+def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool]:
     """
-    Splits language argument from a list of arguments.
+    Splits language argument from a list of arguments and detects --addall flag.
 
     This function processes command-line arguments to separate out a language
     specification if present. By default, it assumes the language is 'en'
     (English) unless the "--lang" option is provided followed by another
-    language code.
+    language code. It also detects the --addall flag.
 
     Args:
         argv: A list of strings representing command-line arguments.
 
     Returns:
-        A tuple containing the language code specified or the default 'en', and
-        a list of the remaining arguments.
+        A tuple containing the language code specified or the default 'en', 
+        a list of the remaining arguments, and a boolean indicating if --addall was specified.
 
     Raises:
         SystemExit: If the "--lang" option is provided without an accompanying
         value.
     """
     lang = "en"
+    addall = False
     out: List[str] = []
     i = 0
     while i < len(argv):
@@ -149,9 +161,13 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str]]:
             lang = argv[i + 1]
             i += 2
             continue
+        elif argv[i] == "--addall":
+            addall = True
+            i += 1
+            continue
         out.append(argv[i])
         i += 1
-    return lang, out
+    return lang, out, addall
 
 
 def detect_pathspec(args: List[str]) -> List[str]:
@@ -213,6 +229,7 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
     """
     include_worktree = any(a in args for a in ("-a", "--all", "--include"))
     pathspec = detect_pathspec(args)
+    debug_log(f"build_git_context: include_worktree={include_worktree}, pathspec={pathspec}")
 
     if include_worktree:
         ns_cmd = ["diff", "--name-status", "HEAD"]
@@ -225,9 +242,11 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
         ns_cmd += ["--", *pathspec]
         diff_cmd += ["--", *pathspec]
 
+    debug_log(f"build_git_context: ns_cmd={ns_cmd}, diff_cmd={diff_cmd}")
     name_status = run_git(ns_cmd).strip()
     diff = run_git(diff_cmd)
     diff = sanitize_text(diff)
+    debug_log(f"build_git_context: diff length={len(diff)}, name_status lines={len(name_status.splitlines())}")
 
     # Helpful extra context
     status = run_git(["status", "--porcelain=v1"]).strip()
@@ -302,11 +321,16 @@ def call_ollama(system: str, user: str, timeout_s: int = 25) -> str:
     url = f"{OLLAMA_HOST}/api/chat"
     payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"temperature": 0.2}, }
+    debug_log(f"Ollama request URL: {url}")
+    debug_log(f"Ollama model: {OLLAMA_MODEL}")
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        j = json.loads(resp.read().decode("utf-8", errors="replace"))
+        raw = resp.read().decode("utf-8", errors="replace")
+        debug_log(f"Ollama raw response: {raw[:1000]}{'...' if len(raw) > 1000 else ''}")
+        j = json.loads(raw)
         text = (j.get("message") or {}).get("content") or ""
+        debug_log(f"Ollama extracted text: {text[:500]}{'...' if len(text) > 500 else ''}")
         return text.strip()
 
 
@@ -366,20 +390,57 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
     url = f"{OPENAI_BASE_URL}/v1/responses"
-    payload = {"model": OPENAI_MODEL, "instructions": system, "input": user, "max_output_tokens": 220, "store": False, }
-    # o1/o3 series and other reasoning models don't support temperature
-    if not re.match(r"^o[0-9]", OPENAI_MODEL):
+    # Reasoning models (o1, o3, gpt-5, etc.) need more tokens for internal reasoning
+    is_reasoning_model = bool(re.match(r"^(o[0-9]|gpt-5)", OPENAI_MODEL))
+    max_tokens = 2000 if is_reasoning_model else 220
+    debug_log(f"Model {OPENAI_MODEL} is_reasoning_model={is_reasoning_model}, max_output_tokens={max_tokens}")
+    payload = {"model": OPENAI_MODEL, "instructions": system, "input": user, "max_output_tokens": max_tokens, "store": False, }
+    # Reasoning models don't support temperature
+    use_temperature = not is_reasoning_model
+    if use_temperature:
         payload["temperature"] = 0.2
+    debug_log(f"OpenAI request URL: {url}")
+    debug_log(f"OpenAI model: {OPENAI_MODEL}")
+    debug_log(f"OpenAI payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
 
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        j = json.loads(resp.read().decode("utf-8", errors="replace"))
-        text = extract_openai_text(j)
-        if not text:
-            raise RuntimeError("OpenAI response contained no text output")
-        return text.strip()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            debug_log(f"OpenAI raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
+            j = json.loads(raw)
+            text = extract_openai_text(j)
+            debug_log(f"OpenAI extracted text: {text[:500] if text else '(empty)'}")
+            if not text:
+                raise RuntimeError("OpenAI response contained no text output")
+            return text.strip()
+    except urllib.error.HTTPError as e:
+        # Check if error is due to unsupported temperature parameter
+        if e.code == 400 and use_temperature:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            debug_log(f"OpenAI HTTP 400 body: {body}")
+            if "temperature" in body.lower():
+                print(f"LLMCommit: Model {OPENAI_MODEL} does not support temperature, retrying without it.", file=sys.stderr)
+                payload.pop("temperature", None)
+                debug_log(f"OpenAI retry payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    debug_log(f"OpenAI retry raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
+                    j = json.loads(raw)
+                    text = extract_openai_text(j)
+                    debug_log(f"OpenAI retry extracted text: {text[:500] if text else '(empty)'}")
+                    if not text:
+                        raise RuntimeError("OpenAI response contained no text output")
+                    return text.strip()
+        raise
 
 
 def normalize_message(msg: str) -> str:
@@ -450,20 +511,39 @@ def main() -> int:
         generation fails, otherwise returns the subprocess return code from
         Git commands.
     """
+    debug_log(f"LLMCommit starting, args: {sys.argv[1:]}")
     if not inside_git_repo():
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 2
 
-    lang, git_args = split_lang_arg(sys.argv[1:])
+    lang, git_args, addall = split_lang_arg(sys.argv[1:])
+    debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}")
+
+    # If --addall is specified, add all untracked files that are not in .gitignore
+    if addall:
+        try:
+            # Get list of untracked files that are not ignored
+            untracked_files = run_git(["ls-files", "--others", "--exclude-standard"]).strip()
+            if untracked_files:
+                file_list = untracked_files.split('\n')
+                debug_log(f"Adding untracked files: {file_list}")
+                # Add each file individually to handle potential errors gracefully
+                for file in file_list:
+                    if file:  # Skip empty strings
+                        run_git(["add", file])
+        except Exception as e:
+            print(f"LLMCommit: Warning - failed to add untracked files: {e}", file=sys.stderr)
 
     # If user chose interactive commit or explicit message behavior, do not override.
     if should_not_autogenerate(git_args):
+        debug_log("Skipping autogeneration, passing through to git")
         p = subprocess.run(["git", "commit", *git_args])
         return p.returncode
 
     # Build prompt from what will be committed.
     try:
         ctx = build_git_context(git_args)
+        debug_log(f"Context built, length: {len(ctx)}")
     except Exception as e:
         print(f"LLMCommit: {e}", file=sys.stderr)
         return 2
@@ -473,34 +553,44 @@ def main() -> int:
 
     msg = ""
     # 1) Ollama first
+    debug_log("Trying Ollama...")
     try:
         msg = call_ollama(system, user)
-    except Exception:
+        debug_log(f"Ollama returned message length: {len(msg)}")
+    except Exception as e:
+        debug_log(f"Ollama failed: {e}")
         msg = ""
 
     # 2) OpenAI fallback
     if not msg.strip():
+        debug_log("Trying OpenAI fallback...")
         try:
             msg = call_openai(system, user)
+            debug_log(f"OpenAI returned message length: {len(msg)}")
         except urllib.error.HTTPError as e:
             body = ""
             try:
                 body = e.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
+            debug_log(f"OpenAI HTTP error {e.code}: {body}")
             print(f"LLMCommit: OpenAI HTTP {e.code}: {body or e.reason}", file=sys.stderr)
             return 3
         except Exception as e:
+            debug_log(f"OpenAI failed: {e}")
             print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
             return 3
 
+    debug_log(f"Raw message before normalization: {msg[:500] if msg else '(empty)'}")
     msg = normalize_message(msg)
+    debug_log(f"Normalized message: {msg[:500] if msg else '(empty)'}")
     if not msg:
         print("LLMCommit: failed to generate a commit message.", file=sys.stderr)
         return 3
 
     # Inject the message into git commit args.
     final_args = [*git_args, *message_to_git_m_args(msg)]
+    debug_log(f"Final git commit args: {final_args}")
     p = subprocess.run(["git", "commit", *final_args])
     return p.returncode
 
