@@ -228,6 +228,15 @@ def should_not_autogenerate(args: List[str]) -> bool:
     return False
 
 
+def head_exists() -> bool:
+    """Check if HEAD exists (i.e., there is at least one commit in the repo)."""
+    try:
+        run_git(["rev-parse", "HEAD"])
+        return True
+    except Exception:
+        return False
+
+
 def build_git_context(args: List[str], max_chars: int = 14000) -> str:
     """
     Determine what diff to summarize:
@@ -237,9 +246,16 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
     """
     include_worktree = any(a in args for a in ("-a", "--all", "--include"))
     pathspec = detect_pathspec(args)
-    debug_log(f"build_git_context: include_worktree={include_worktree}, pathspec={pathspec}")
+    has_head = head_exists()
+    debug_log(f"build_git_context: include_worktree={include_worktree}, pathspec={pathspec}, has_head={has_head}")
 
-    if include_worktree:
+    # For initial commit (no HEAD), we can only use staged changes
+    if not has_head:
+        if include_worktree:
+            debug_log("No HEAD exists (initial commit), ignoring -a flag and using staged changes")
+        ns_cmd = ["diff", "--cached", "--name-status"]
+        diff_cmd = ["diff", "--cached", "--no-color"]
+    elif include_worktree:
         ns_cmd = ["diff", "--name-status", "HEAD"]
         diff_cmd = ["diff", "--no-color", "HEAD"]
     else:
