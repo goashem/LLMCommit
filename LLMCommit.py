@@ -519,6 +519,36 @@ def message_to_git_m_args(msg: str) -> List[str]:
     return args
 
 
+def smart_push() -> int:
+    """Push to remote, setting upstream if needed."""
+    result = subprocess.run(["git", "push"], capture_output=True, text=True)
+    if result.returncode == 0:
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        return 0
+
+    # Check if failure is due to no upstream
+    if "has no upstream branch" in result.stderr or "no upstream configured" in result.stderr:
+        debug_log("No upstream branch, setting it automatically...")
+        # Get current branch name
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True
+        ).stdout.strip()
+
+        debug_log(f"Pushing with --set-upstream origin {branch}")
+        return subprocess.run(["git", "push", "--set-upstream", "origin", branch]).returncode
+
+    # Some other push failure - print the error
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="")
+    return result.returncode
+
+
 def main() -> int:
     """
     Main entry point for the application to automatically generate a git commit message.
@@ -564,8 +594,7 @@ def main() -> int:
         p = subprocess.run(["git", "commit", *git_args])
         if push and p.returncode == 0:
             debug_log("Pushing to remote...")
-            push_result = subprocess.run(["git", "push"])
-            return push_result.returncode
+            return smart_push()
         return p.returncode
 
     # Build prompt from what will be committed.
@@ -624,8 +653,7 @@ def main() -> int:
     # Push if --push was specified and commit succeeded
     if push and p.returncode == 0:
         debug_log("Pushing to remote...")
-        push_result = subprocess.run(["git", "push"])
-        return push_result.returncode
+        return smart_push()
 
     return p.returncode
 
