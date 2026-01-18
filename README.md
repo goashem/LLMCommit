@@ -24,13 +24,14 @@ Example:
 
 ## Environment variables (optional)
 
-| Variable          | Default                  | Description                  |
-|-------------------|--------------------------|------------------------------|
-| `OLLAMA_HOST`     | `http://localhost:11434` | Ollama server URL            |
-| `OLLAMA_MODEL`    | `qwen3:8b`               | Ollama model to use          |
-| `OPENAI_API_KEY`  | (none)                   | Required for OpenAI fallback |
-| `OPENAI_MODEL`    | `gpt-5-mini`             | OpenAI model to use          |
-| `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI-compatible API base   |
+| Variable            | Default                  | Description                           |
+|---------------------|--------------------------|---------------------------------------|
+| `OLLAMA_HOST`       | `http://localhost:11434` | Ollama server URL                     |
+| `OLLAMA_MODEL`      | `qwen3:8b`               | Ollama model to use                   |
+| `OPENAI_API_KEY`    | (none)                   | Required for OpenAI fallback          |
+| `OPENAI_MODEL`      | `gpt-5-mini`             | OpenAI model to use                   |
+| `OPENAI_BASE_URL`   | `https://api.openai.com` | OpenAI-compatible API base            |
+| `LLMCOMMIT_DEBUG`   | (none)                   | Set to "1", "true", or "yes" for logs |
 
 ---
 
@@ -217,11 +218,18 @@ llmcommit -a --push
 
 * Ensure `OPENAI_API_KEY` is set in your environment.
 
+**Debugging**
+
+* Set `LLMCOMMIT_DEBUG=1` for verbose logs to stderr. Example:
+    ```bash
+    LLMCOMMIT_DEBUG=1 llmcommit -a
+    ```
+
 **SSL Certificate Error: "certificate verify failed: unable to get local issuer certificate"**
 
 This error occurs when Python cannot verify SSL certificates for HTTPS connections. It is **most common on macOS** but
 can also occur on Linux (especially in Docker containers or minimal installations) and occasionally on Windows in
-corporate environments with custom certificates.
+corporate environments.
 
 *macOS fix (most common):*
 
