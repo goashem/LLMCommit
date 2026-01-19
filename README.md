@@ -1,4 +1,4 @@
-# LLMCommit: automatic git commit messages (Ollama first, OpenAI fallback)
+# LLMCommit: automatic git commit messages (Ollama first, OpenAI second, Gemini final fallback)
 
 `llmcommit` is a small wrapper around `git commit` that generates the commit message automatically from the changes
 being committed.
@@ -17,10 +17,11 @@ Example:
 
 * Git installed and available in PATH (`git --version`)
 * Python 3.9+ installed and available in PATH (`python3 --version` or `python --version`)
-* Optional (recommended): Ollama installed and running locally
+* Primary option (recommended): Ollama installed and running locally
     * Default Ollama endpoint: `http://localhost:11434`
     * Default model: `qwen3:8b`
-* Optional fallback: OpenAI API key (used only if Ollama is unavailable/fails)
+* Optional fallback 1: OpenAI API key (used only if OLLAMA_API_KEY is not set or Ollama fails)
+* Optional fallback 2: Google Gemini API key (used only if neither Ollama nor OpenAI are available)
 
 ## Environment variables (optional)
 
@@ -31,7 +32,14 @@ Example:
 | `OPENAI_API_KEY`    | (none)                   | Required for OpenAI fallback          |
 | `OPENAI_MODEL`      | `gpt-5-mini`             | OpenAI model to use                   |
 | `OPENAI_BASE_URL`   | `https://api.openai.com` | OpenAI-compatible API base            |
+| `GEMINI_API_KEY`    | (none)                   | Required for Gemini final fallback    |
+| `GEMINI_MODEL`      | `gemini-pro`             | Gemini model to use                   |
 | `LLMCOMMIT_DEBUG`   | (none)                   | Set to "1", "true", or "yes" for logs |
+
+The tool attempts to generate commit messages in this order:
+1. Ollama (local) - if `OLLAMA_HOST` is reachable
+2. OpenAI (cloud) - if `OPENAI_API_KEY` is set and Ollama fails
+3. Gemini (cloud) - if `GEMINI_API_KEY` is set and both Ollama and OpenAI fail
 
 ---
 
@@ -192,6 +200,7 @@ llmcommit -a --push
 * If you pass `-m`, `-F`, `--template`, `--no-edit`, `--fixup`, `--squash`, `-C`, `-c`, or interactive flags like `-p`/
   `-i`, the tool will not auto-generate a message and will run `git commit` normally (to avoid surprising behavior).
 * If you run it outside a repo, you'll get: `not inside a git repository`.
+* Message generation follows a fallback chain: Ollama (local) → OpenAI (cloud) → Gemini (cloud, final fallback).
 
 ---
 
@@ -217,6 +226,13 @@ llmcommit -a --push
 **OpenAI fallback fails**
 
 * Ensure `OPENAI_API_KEY` is set in your environment.
+* This fallback is only used if Ollama is not available or fails.
+
+**Gemini final fallback fails**
+
+* Ensure `GEMINI_API_KEY` is set in your environment.
+* This final fallback is only used if both Ollama and OpenAI are not available or fail.
+* Note that `GEMINI_API_KEY` must be set for this service to be attempted.
 
 **Debugging**
 
