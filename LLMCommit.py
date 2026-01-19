@@ -16,6 +16,8 @@
 #   OPENAI_API_KEY=...
 #   OPENAI_MODEL=gpt-5-mini
 #   OPENAI_BASE_URL=https://api.openai.com
+#   GEMINI_API_KEY=...
+#   GEMINI_MODEL=gemini-pro
 
 from __future__ import annotations
 
@@ -34,6 +36,9 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-pro")
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
@@ -467,6 +472,71 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
         raise
 
 
+def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
+    """
+    Call the Google Gemini API to generate a response based on provided system instructions
+    and user input. The function constructs a request with a specified timeout, sends
+    it to the Gemini service, and returns the text output from the response. If the API
+    key is not set or if the response does not include text output, a RuntimeError is raised.
+
+    Parameters:
+        system (str): The instructions for the Gemini model to follow.
+        user (str): The user input to be processed by the Gemini model.
+        timeout_s (int): The timeout for the API request in seconds. Defaults to 25.
+
+    Returns:
+        str: The text output from the Gemini response.
+    """
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    
+    # Combine system and user messages in the format expected by Gemini
+    prompt = f"{system}\n\n{user}"
+    
+    payload = {
+        "contents": [{
+            "parts": [{
+                "text": prompt
+            }]
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 220
+        }
+    }
+    
+    debug_log(f"Gemini request URL: {url}")
+    debug_log(f"Gemini model: {GEMINI_MODEL}")
+    debug_log(f"Gemini payload (without prompt): { {k: v for k, v in payload.items() if k != 'contents'} }")
+    
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+        debug_log(f"Gemini raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
+        j = json.loads(raw)
+        
+        # Extract text from Gemini response
+        candidates = j.get("candidates", [])
+        if not candidates:
+            raise RuntimeError("Gemini response contained no candidates")
+            
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", [])
+        if not parts:
+            raise RuntimeError("Gemini response contained no parts")
+            
+        text = parts[0].get("text", "")
+        debug_log(f"Gemini extracted text: {text[:500] if text else '(empty)'}")
+        if not text:
+            raise RuntimeError("Gemini response contained no text output")
+        return text.strip()
+
+
 def normalize_message(msg: str) -> str:
     """
 
@@ -556,8 +626,10 @@ def main() -> int:
     This function checks if the user is inside a Git repository and processes the
     command-line arguments to determine the mode of operation. If automatic
     commit message generation is deemed appropriate, it attempts to generate a
-    commit message using either the Ollama service first, or falls back to
-    using OpenAI if needed.
+    commit message using the following services in order:
+    1. Ollama (local)
+    2. OpenAI (cloud)
+    3. Gemini (cloud, final fallback)
 
     Return:
         int: The exit code indicating the result of the operation; returns 2 if not
@@ -636,6 +708,17 @@ def main() -> int:
         except Exception as e:
             debug_log(f"OpenAI failed: {e}")
             print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
+            return 3
+
+    # 3) Gemini as final fallback
+    if not msg.strip() and GEMINI_API_KEY:
+        debug_log("Trying Gemini fallback...")
+        try:
+            msg = call_gemini(system, user)
+            debug_log(f"Gemini returned message length: {len(msg)}")
+        except Exception as e:
+            debug_log(f"Gemini failed: {e}")
+            print(f"LLMCommit: Gemini call failed: {e}", file=sys.stderr)
             return 3
 
     debug_log(f"Raw message before normalization: {msg[:500] if msg else '(empty)'}")
