@@ -14,3 +14,4 @@ coverage/
 **/*.min.js
 
 /TODO.md
+/DONE.md
