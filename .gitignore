@@ -13,3 +13,4 @@ coverage/
 *.mp4
 **/*.min.js
 
+/TODO.md
