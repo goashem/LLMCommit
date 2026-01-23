@@ -14,7 +14,7 @@
 #   OLLAMA_HOST=http://localhost:11434
 #   OLLAMA_MODEL=qwen3:8b
 #   OPENAI_API_KEY=...
-#   OPENAI_MODEL=gpt-5-mini
+#   OPENAI_MODEL=gpt-4o-mini
 #   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
 #   GEMINI_MODEL=gemini-pro
@@ -26,6 +26,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import List, Tuple
@@ -34,11 +36,11 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/"
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-pro")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
@@ -47,6 +49,44 @@ def debug_log(msg: str) -> None:
     """Print debug message to stderr if DEBUG is enabled."""
     if DEBUG:
         print(f"[DEBUG] {msg}", file=sys.stderr)
+
+
+class Spinner:
+    """Simple terminal spinner for progress indication."""
+    def __init__(self, message="Processing"):
+        self.message = message
+        self.running = False
+        self.thread = None
+    
+    def start(self):
+        """Start the spinner in a separate thread."""
+        if DEBUG:  # Don't show spinner in debug mode
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._spin)
+        self.thread.daemon = True
+        self.thread.start()
+    
+    def stop(self):
+        """Stop the spinner."""
+        if not self.running:
+            return
+        self.running = False
+        if self.thread:
+            self.thread.join()
+        # Clear the line
+        sys.stderr.write('\r' + ' ' * (len(self.message) + 10) + '\r')
+        sys.stderr.flush()
+    
+    def _spin(self):
+        """Internal spinning animation."""
+        chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        i = 0
+        while self.running:
+            sys.stderr.write(f'\r{chars[i % len(chars)]} {self.message}...')
+            sys.stderr.flush()
+            time.sleep(0.1)
+            i += 1
 
 
 # Best-effort: avoid sending obvious secrets in diffs.
@@ -365,47 +405,37 @@ def call_ollama(system: str, user: str, timeout_s: int = 25) -> str:
 
 def extract_openai_text(j: dict) -> str:
     """
-    Extracts and returns textual content from a given dictionary. The function
-    prioritizes the "output_text" key if it exists and is a non-empty string. If
-    not, it will parse the "output" key if it is a list, looking for items
-    where the type is "message" and the role is "assistant". It then compiles
-    text content from these items if they are of type "output_text" or "text".
-
+    Extracts and returns textual content from OpenAI chat completions response.
+    
     Args:
-        j: Dictionary containing potential text elements to extract.
+        j: Dictionary containing OpenAI API response.
 
     Returns:
-        A string containing the extracted text content. If no appropriate content
-        is found, an empty string is returned.
+        A string containing the extracted text content from the first choice's message.
+        Returns empty string if no content found.
     """
-    if isinstance(j.get("output_text"), str) and j["output_text"].strip():
-        return j["output_text"].strip()
-
-    parts: List[str] = []
-    output = j.get("output")
-    if isinstance(output, list):
-        for item in output:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "message" or item.get("role") != "assistant":
-                continue
-            content = item.get("content")
-            if not isinstance(content, list):
-                continue
-            for c in content:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("type") in ("output_text", "text") and isinstance(c.get("text"), str):
-                    parts.append(c["text"])
-    return "\n".join(p.strip() for p in parts if p.strip()).strip()
+    # Standard OpenAI chat completions response format
+    choices = j.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+    
+    # Fallback for alternative response formats
+    return ""
 
 
 def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
     """
-    Call the OpenAI API to generate a response based on provided system instructions
-    and user input. The function constructs a request with a specified timeout, sends
-    it to the OpenAI service, and returns the text output from the response. If the API
-    key is not set or if the response does not include text output, a RuntimeError is raised.
+    Call the OpenAI Chat Completions API to generate a response based on provided
+    system instructions and user input. The function constructs a request with a
+    specified timeout, sends it to the OpenAI service, and returns the text output
+    from the response. If the API key is not set or if the response does not include
+    text output, a RuntimeError is raised.
 
     Parameters:
         system (str): The instructions for the OpenAI model to follow.
@@ -418,19 +448,29 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
-    url = f"{OPENAI_BASE_URL}/v1/responses"
-    # Reasoning models (o1, o3, gpt-5, etc.) need more tokens for internal reasoning
-    is_reasoning_model = bool(re.match(r"^(o[0-9]|gpt-5)", OPENAI_MODEL))
+    url = f"{OPENAI_BASE_URL}/v1/chat/completions"
+    # Reasoning models (o1, o3-mini, etc.) need more tokens for internal reasoning
+    is_reasoning_model = bool(re.match(r"^o[0-9]", OPENAI_MODEL))
     max_tokens = 2000 if is_reasoning_model else 220
-    debug_log(f"Model {OPENAI_MODEL} is_reasoning_model={is_reasoning_model}, max_output_tokens={max_tokens}")
-    payload = {"model": OPENAI_MODEL, "instructions": system, "input": user, "max_output_tokens": max_tokens, "store": False, }
+    debug_log(f"Model {OPENAI_MODEL} is_reasoning_model={is_reasoning_model}, max_tokens={max_tokens}")
+    
+    # Build proper Chat Completions API payload
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "max_tokens": max_tokens
+    }
+    
     # Reasoning models don't support temperature
     use_temperature = not is_reasoning_model
     if use_temperature:
         payload["temperature"] = 0.2
     debug_log(f"OpenAI request URL: {url}")
     debug_log(f"OpenAI model: {OPENAI_MODEL}")
-    debug_log(f"OpenAI payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
+    debug_log(f"OpenAI payload (without messages): { {k: v for k, v in payload.items() if k != 'messages'} }")
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
@@ -446,30 +486,47 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
                 raise RuntimeError("OpenAI response contained no text output")
             return text.strip()
     except urllib.error.HTTPError as e:
-        # Check if error is due to unsupported temperature parameter
-        if e.code == 400 and use_temperature:
-            body = ""
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+            error_data = json.loads(body)
+        except Exception:
+            error_data = {}
+        
+        debug_log(f"OpenAI HTTP {e.code} body: {body}")
+        
+        # Only retry for temperature-specific errors
+        if e.code == 400 and use_temperature and body:
             try:
-                body = e.read().decode("utf-8", errors="replace")
+                error_message = error_data.get("error", {}).get("message", "").lower()
+                if "temperature" in error_message or "not supported" in error_message:
+                    print(f"LLMCommit: Model {OPENAI_MODEL} does not support temperature, retrying without it.",
+                          file=sys.stderr)
+                    payload.pop("temperature", None)
+                    debug_log(f"OpenAI retry payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
+                    data = json.dumps(payload).encode("utf-8")
+                    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+                    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                        raw = resp.read().decode("utf-8", errors="replace")
+                        debug_log(f"OpenAI retry raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
+                        j = json.loads(raw)
+                        text = extract_openai_text(j)
+                        debug_log(f"OpenAI retry extracted text: {text[:500] if text else '(empty)'}")
+                        if not text:
+                            raise RuntimeError("OpenAI response contained no text output")
+                        return text.strip()
             except Exception:
                 pass
-            debug_log(f"OpenAI HTTP 400 body: {body}")
-            if "temperature" in body.lower():
-                print(f"LLMCommit: Model {OPENAI_MODEL} does not support temperature, retrying without it.", file=sys.stderr)
-                payload.pop("temperature", None)
-                debug_log(f"OpenAI retry payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
-                data = json.dumps(payload).encode("utf-8")
-                req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                    raw = resp.read().decode("utf-8", errors="replace")
-                    debug_log(f"OpenAI retry raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
-                    j = json.loads(raw)
-                    text = extract_openai_text(j)
-                    debug_log(f"OpenAI retry extracted text: {text[:500] if text else '(empty)'}")
-                    if not text:
-                        raise RuntimeError("OpenAI response contained no text output")
-                    return text.strip()
-        raise
+        
+        # Provide helpful error messages for common issues
+        if e.code == 429:
+            raise RuntimeError(f"OpenAI rate limit exceeded. Please try again later.")
+        elif e.code == 401:
+            raise RuntimeError(f"OpenAI authentication failed. Check your OPENAI_API_KEY.")
+        elif e.code == 404:
+            raise RuntimeError(f"OpenAI model '{OPENAI_MODEL}' not found. Check OPENAI_MODEL setting.")
+        
+        raise RuntimeError(f"OpenAI HTTP {e.code}: {error_data.get('error', {}).get('message', body or e.reason)}")
 
 
 def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
@@ -490,7 +547,8 @@ def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    # API key passed in header for security (not in URL)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     
     # Combine system and user messages in the format expected by Gemini
     prompt = f"{system}\n\n{user}"
@@ -512,7 +570,10 @@ def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
     debug_log(f"Gemini payload (without prompt): { {k: v for k, v in payload.items() if k != 'contents'} }")
     
     data = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY
+    }
     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
 
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -669,6 +730,15 @@ def main() -> int:
             return smart_push()
         return p.returncode
 
+    # Check for interactive review flag
+    review_mode = False
+    if "--review" in git_args:
+        review_mode = True
+        git_args.remove("--review")
+    elif "--interactive" in git_args:
+        review_mode = True
+        git_args.remove("--interactive")
+
     # Build prompt from what will be committed.
     try:
         ctx = build_git_context(git_args)
@@ -683,16 +753,22 @@ def main() -> int:
     msg = ""
     # 1) Ollama first
     debug_log("Trying Ollama...")
+    spinner = Spinner("Generating commit message")
+    spinner.start()
     try:
         msg = call_ollama(system, user)
         debug_log(f"Ollama returned message length: {len(msg)}")
     except Exception as e:
         debug_log(f"Ollama failed: {e}")
         msg = ""
+    finally:
+        spinner.stop()
 
     # 2) OpenAI fallback
     if not msg.strip():
         debug_log("Trying OpenAI fallback...")
+        spinner = Spinner("Generating commit message (OpenAI)")
+        spinner.start()
         try:
             msg = call_openai(system, user)
             debug_log(f"OpenAI returned message length: {len(msg)}")
@@ -709,10 +785,14 @@ def main() -> int:
             debug_log(f"OpenAI failed: {e}")
             print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
             return 3
+        finally:
+            spinner.stop()
 
     # 3) Gemini as final fallback
     if not msg.strip() and GEMINI_API_KEY:
         debug_log("Trying Gemini fallback...")
+        spinner = Spinner("Generating commit message (Gemini)")
+        spinner.start()
         try:
             msg = call_gemini(system, user)
             debug_log(f"Gemini returned message length: {len(msg)}")
@@ -720,6 +800,8 @@ def main() -> int:
             debug_log(f"Gemini failed: {e}")
             print(f"LLMCommit: Gemini call failed: {e}", file=sys.stderr)
             return 3
+        finally:
+            spinner.stop()
 
     debug_log(f"Raw message before normalization: {msg[:500] if msg else '(empty)'}")
     msg = normalize_message(msg)
@@ -727,6 +809,28 @@ def main() -> int:
     if not msg:
         print("LLMCommit: failed to generate a commit message.", file=sys.stderr)
         return 3
+
+    # Interactive review if requested
+    if review_mode:
+        import tempfile
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "vi"))
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write(msg)
+            temp_path = f.name
+        
+        try:
+            subprocess.run([editor, temp_path], check=True)
+            with open(temp_path, 'r') as f:
+                msg = f.read().strip()
+        except Exception as e:
+            print(f"LLMCommit: Failed to open editor: {e}", file=sys.stderr)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        
+        if not msg:
+            print("LLMCommit: Commit message empty, aborting.", file=sys.stderr)
+            return 1
 
     # Inject the message into git commit args.
     final_args = [*git_args, *message_to_git_m_args(msg)]
