@@ -30,17 +30,67 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Tuple, Optional
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:8b")
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
+def load_config() -> dict:
+    """Load configuration from .llmcommit.json files.
+    
+    Precedence (highest to lowest):
+    1. Environment variables
+    2. Project-level config (.llmcommit.json in git root)
+    3. User-level config (~/.llmcommit.json)
+    """
+    config = {}
+    
+    # 1. User-level config
+    user_config = Path.home() / ".llmcommit.json"
+    if user_config.exists():
+        try:
+            with open(user_config) as f:
+                config.update(json.load(f))
+        except Exception as e:
+            print(f"Warning: Failed to load user config from {user_config}: {e}", file=sys.stderr)
+    
+    # 2. Project-level config (overrides user config)
+    try:
+        git_root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        project_config = Path(git_root) / ".llmcommit.json"
+        if project_config.exists():
+            with open(project_config) as f:
+                config.update(json.load(f))
+    except Exception:
+        pass  # Not in a git repo or config doesn't exist
+    
+    return config
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+
+# Load config once at module level
+_CONFIG = load_config()
+
+# Configuration with env var override > project config > user config > default
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", _CONFIG.get("ollama_host", "http://localhost:11434")).rstrip("/")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", _CONFIG.get("ollama_model", "qwen3:8b"))
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", _CONFIG.get("ollama_timeout", "30")))
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", _CONFIG.get("openai_api_key", "")).strip()
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", _CONFIG.get("openai_model", "gpt-4o-mini"))
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url", "https://api.openai.com")).rstrip("/")
+OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", _CONFIG.get("openai_timeout", "25")))
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", "")).strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-1.5-flash"))
+GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", _CONFIG.get("gemini_timeout", "25")))
+
+# Provider pipeline order configuration
+# Can be set via environment variable or config file
+# Format: comma-separated list, e.g., "ollama,openai,gemini"
+provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,openai,gemini"))
+PROVIDER_ORDER = [p.strip().lower() for p in provider_order_str.split(",") if p.strip()]
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
@@ -177,30 +227,37 @@ def inside_git_repo() -> bool:
         return False
 
 
-def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool]:
+def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, Optional[str], Optional[str]]:
     """
-    Splits language argument from a list of arguments and detects --addall and --push flags.
+    Splits language argument from a list of arguments and detects custom flags.
 
     This function processes command-line arguments to separate out a language
     specification if present. By default, it assumes the language is 'en'
     (English) unless the "--lang" option is provided followed by another
-    language code. It also detects the --addall and --push flags.
+    language code. It also detects various custom flags.
 
     Args:
         argv: A list of strings representing command-line arguments.
 
     Returns:
-        A tuple containing the language code specified or the default 'en',
-        a list of the remaining arguments, a boolean indicating if --addall was specified,
-        and a boolean indicating if --push was specified.
+        A tuple containing:
+        - language code (str)
+        - remaining git arguments (List[str])
+        - addall flag (bool)
+        - push flag (bool)
+        - conventional flag (bool)
+        - ollama_model override (Optional[str])
+        - openai_model override (Optional[str])
 
     Raises:
-        SystemExit: If the "--lang" option is provided without an accompanying
-        value.
+        SystemExit: If required option values are missing.
     """
     lang = "en"
     addall = False
     push = False
+    conventional = False
+    ollama_model = None
+    openai_model = None
     out: List[str] = []
     i = 0
     while i < len(argv):
@@ -218,9 +275,36 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool]:
             push = True
             i += 1
             continue
+        elif argv[i] == "--conventional":
+            conventional = True
+            i += 1
+            continue
+        elif argv[i] == "--model":
+            if i + 1 >= len(argv):
+                raise SystemExit("LLMCommit: --model requires a value")
+            model = argv[i + 1]
+            # Auto-detect provider based on model name
+            if model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3"):
+                openai_model = model
+            else:
+                ollama_model = model
+            i += 2
+            continue
+        elif argv[i] == "--ollama-model":
+            if i + 1 >= len(argv):
+                raise SystemExit("LLMCommit: --ollama-model requires a value")
+            ollama_model = argv[i + 1]
+            i += 2
+            continue
+        elif argv[i] == "--openai-model":
+            if i + 1 >= len(argv):
+                raise SystemExit("LLMCommit: --openai-model requires a value")
+            openai_model = argv[i + 1]
+            i += 2
+            continue
         out.append(argv[i])
         i += 1
-    return lang, out, addall, push
+    return lang, out, addall, push, conventional, ollama_model, openai_model
 
 
 def detect_pathspec(args: List[str]) -> List[str]:
@@ -336,7 +420,7 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
             f"{diff.strip()}\n")
 
 
-def system_instructions(lang_code: str) -> str:
+def system_instructions(lang_code: str, conventional: bool = False) -> str:
     """
     Generates guidelines for creating git commit messages in a specified language.
 
@@ -350,6 +434,8 @@ def system_instructions(lang_code: str) -> str:
         lang_code: str
             The code representing the language in which the commit message
             should be written.
+        conventional: bool
+            If True, enforce Conventional Commits format.
 
     Returns:
         str
@@ -360,17 +446,51 @@ def system_instructions(lang_code: str) -> str:
     lang_name = LANG_NAMES.get(lang_code.lower())
     lang_line = f"Write the commit message in {lang_name}." if lang_name else f"Write the commit message in language code '{lang_code}'."
 
+    conventional_rules = ""
+    if conventional:
+        conventional_rules = """- Use Conventional Commits format: <type>(<scope>): <description>
+- Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore
+- Examples: "feat(auth): add OAuth2 support", "fix: resolve memory leak in parser"
+- Breaking changes: add "!" after type/scope or "BREAKING CHANGE:" in body
+"""
+
     return ("You write excellent git commit messages.\n\n"
             f"{lang_line}\n"
             "Rules:\n"
             "- Output ONLY the commit message text (no quotes, no code fences, no commentary).\n"
             "- First line: concise summary <= 72 characters.\n"
+            f"{conventional_rules}"
             "- If useful, add a blank line then a short body (bullets allowed).\n"
             "- Describe WHAT changed and WHY.\n"
             "- Do not mention AI, LLMs, prompts, or tooling.\n")
 
 
-def call_ollama(system: str, user: str, timeout_s: int = 25) -> str:
+def retry_with_backoff(func, max_retries=3, base_delay=1.0):
+    """Retry a function with exponential backoff for transient failures."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except urllib.error.URLError as e:
+            # Network errors, timeouts - retry these
+            if attempt == max_retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            debug_log(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
+            time.sleep(delay)
+        except urllib.error.HTTPError as e:
+            # Don't retry client errors (4xx) except rate limits
+            if e.code == 429:  # Rate limit
+                if attempt == max_retries - 1:
+                    raise
+                delay = base_delay * (2 ** attempt)
+                debug_log(f"Rate limited. Retrying in {delay}s...")
+                time.sleep(delay)
+            else:
+                raise
+    raise RuntimeError("Max retries exceeded")
+
+
+def call_ollama(system: str, user: str, timeout_s: int = None, model: str = None) -> str:
     """
     Makes a call to the Ollama API chat endpoint to interact with a model using
     specified system and user messages. Returns the response from the model
@@ -383,15 +503,21 @@ def call_ollama(system: str, user: str, timeout_s: int = 25) -> str:
     system: The system message to include in the payload.
     user: The user message to include in the payload.
     timeout_s: The timeout in seconds for the API call. Defaults to 25.
+    model: The Ollama model to use. Defaults to OLLAMA_MODEL.
 
     Returns:
     The content of the response message from the API, as a stripped string.
     """
+    if timeout_s is None:
+        timeout_s = OLLAMA_TIMEOUT
+    if model is None:
+        model = OLLAMA_MODEL
     url = f"{OLLAMA_HOST}/api/chat"
-    payload = {"model": OLLAMA_MODEL, "stream": False, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    payload = {"model": model, "stream": False, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"temperature": 0.2}, }
     debug_log(f"Ollama request URL: {url}")
-    debug_log(f"Ollama model: {OLLAMA_MODEL}")
+    debug_log(f"Ollama model: {model}")
+    debug_log(f"Ollama timeout: {timeout_s}s")
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -429,7 +555,7 @@ def extract_openai_text(j: dict) -> str:
     return ""
 
 
-def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
+def call_openai(system: str, user: str, timeout_s: int = None, model: str = None) -> str:
     """
     Call the OpenAI Chat Completions API to generate a response based on provided
     system instructions and user input. The function constructs a request with a
@@ -441,10 +567,15 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
         system (str): The instructions for the OpenAI model to follow.
         user (str): The user input to be processed by the OpenAI model.
         timeout_s (int): The timeout for the API request in seconds. Defaults to 25.
+        model (str): The OpenAI model to use. Defaults to OPENAI_MODEL.
 
     Returns:
         str: The text output from the OpenAI response.
     """
+    if timeout_s is None:
+        timeout_s = OPENAI_TIMEOUT
+    if model is None:
+        model = OPENAI_MODEL
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
@@ -470,6 +601,7 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
         payload["temperature"] = 0.2
     debug_log(f"OpenAI request URL: {url}")
     debug_log(f"OpenAI model: {OPENAI_MODEL}")
+    debug_log(f"OpenAI timeout: {timeout_s}s")
     debug_log(f"OpenAI payload (without messages): { {k: v for k, v in payload.items() if k != 'messages'} }")
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
@@ -529,7 +661,7 @@ def call_openai(system: str, user: str, timeout_s: int = 25) -> str:
         raise RuntimeError(f"OpenAI HTTP {e.code}: {error_data.get('error', {}).get('message', body or e.reason)}")
 
 
-def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
+def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
     """
     Call the Google Gemini API to generate a response based on provided system instructions
     and user input. The function constructs a request with a specified timeout, sends
@@ -544,6 +676,8 @@ def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
     Returns:
         str: The text output from the Gemini response.
     """
+    if timeout_s is None:
+        timeout_s = GEMINI_TIMEOUT
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set")
 
@@ -567,6 +701,7 @@ def call_gemini(system: str, user: str, timeout_s: int = 25) -> str:
     
     debug_log(f"Gemini request URL: {url}")
     debug_log(f"Gemini model: {GEMINI_MODEL}")
+    debug_log(f"Gemini timeout: {timeout_s}s")
     debug_log(f"Gemini payload (without prompt): { {k: v for k, v in payload.items() if k != 'contents'} }")
     
     data = json.dumps(payload).encode("utf-8")
@@ -703,8 +838,9 @@ def main() -> int:
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 2
 
-    lang, git_args, addall, push = split_lang_arg(sys.argv[1:])
-    debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}, push: {push}")
+    lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override = split_lang_arg(sys.argv[1:])
+    debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}, push: {push}, conventional: {conventional}")
+    debug_log(f"Model overrides: ollama={ollama_model_override}, openai={openai_model_override}")
 
     # If --addall is specified, add all untracked files that are not in .gitignore
     if addall:
@@ -712,14 +848,37 @@ def main() -> int:
             # Get list of untracked files that are not ignored
             untracked_files = run_git(["ls-files", "--others", "--exclude-standard"]).strip()
             if untracked_files:
-                file_list = untracked_files.split('\n')
+                file_list = [f for f in untracked_files.split('\n') if f]
                 debug_log(f"Adding untracked files: {file_list}")
-                # Add each file individually to handle potential errors gracefully
+                
+                failed_files = []
                 for file in file_list:
-                    if file:  # Skip empty strings
+                    try:
                         run_git(["add", file])
+                    except Exception as e:
+                        debug_log(f"Failed to add {file}: {e}")
+                        failed_files.append(file)
+                
+                if failed_files:
+                    print(f"LLMCommit: Warning - failed to add {len(failed_files)} file(s):",
+                          file=sys.stderr)
+                    for f in failed_files[:5]:  # Show first 5
+                        print(f"  - {f}", file=sys.stderr)
+                    if len(failed_files) > 5:
+                        print(f"  ... and {len(failed_files) - 5} more", file=sys.stderr)
+                    
+                    # Ask user if they want to continue
+                    try:
+                        response = input("Continue with commit anyway? [y/N]: ").strip().lower()
+                        if response not in ('y', 'yes'):
+                            print("Commit cancelled.", file=sys.stderr)
+                            return 1
+                    except (EOFError, KeyboardInterrupt):
+                        print("\nCommit cancelled.", file=sys.stderr)
+                        return 1
         except Exception as e:
-            print(f"LLMCommit: Warning - failed to add untracked files: {e}", file=sys.stderr)
+            print(f"LLMCommit: Error during --addall: {e}", file=sys.stderr)
+            return 2
 
     # If user chose interactive commit or explicit message behavior, do not override.
     if should_not_autogenerate(git_args):
@@ -747,61 +906,79 @@ def main() -> int:
         print(f"LLMCommit: {e}", file=sys.stderr)
         return 2
 
-    system = system_instructions(lang)
+    system = system_instructions(lang, conventional)
     user = "Generate a high-quality git commit message for these changes.\n\n" + ctx
 
+    # Try providers in configured order
     msg = ""
-    # 1) Ollama first
-    debug_log("Trying Ollama...")
-    spinner = Spinner("Generating commit message")
-    spinner.start()
-    try:
-        msg = call_ollama(system, user)
-        debug_log(f"Ollama returned message length: {len(msg)}")
-    except Exception as e:
-        debug_log(f"Ollama failed: {e}")
-        msg = ""
-    finally:
-        spinner.stop()
-
-    # 2) OpenAI fallback
-    if not msg.strip():
-        debug_log("Trying OpenAI fallback...")
-        spinner = Spinner("Generating commit message (OpenAI)")
-        spinner.start()
-        try:
-            msg = call_openai(system, user)
-            debug_log(f"OpenAI returned message length: {len(msg)}")
-        except urllib.error.HTTPError as e:
-            body = ""
+    providers_tried = []
+    
+    for provider in PROVIDER_ORDER:
+        if msg.strip():
+            break  # Already got a message
+            
+        if provider == "ollama":
+            debug_log("Trying Ollama...")
+            spinner = Spinner("Generating commit message (Ollama)")
+            spinner.start()
             try:
-                body = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            debug_log(f"OpenAI HTTP error {e.code}: {body}")
-            print(f"LLMCommit: OpenAI HTTP {e.code}: {body or e.reason}", file=sys.stderr)
-            return 3
-        except Exception as e:
-            debug_log(f"OpenAI failed: {e}")
-            print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
-            return 3
-        finally:
-            spinner.stop()
-
-    # 3) Gemini as final fallback
-    if not msg.strip() and GEMINI_API_KEY:
-        debug_log("Trying Gemini fallback...")
-        spinner = Spinner("Generating commit message (Gemini)")
-        spinner.start()
-        try:
-            msg = call_gemini(system, user)
-            debug_log(f"Gemini returned message length: {len(msg)}")
-        except Exception as e:
-            debug_log(f"Gemini failed: {e}")
-            print(f"LLMCommit: Gemini call failed: {e}", file=sys.stderr)
-            return 3
-        finally:
-            spinner.stop()
+                msg = retry_with_backoff(lambda: call_ollama(system, user, model=ollama_model_override))
+                debug_log(f"Ollama returned message length: {len(msg)}")
+                providers_tried.append("ollama")
+            except Exception as e:
+                debug_log(f"Ollama failed: {e}")
+                providers_tried.append("ollama (failed)")
+            finally:
+                spinner.stop()
+                
+        elif provider == "openai":
+            if not OPENAI_API_KEY:
+                debug_log("Skipping OpenAI (no API key)")
+                continue
+            debug_log("Trying OpenAI...")
+            spinner = Spinner("Generating commit message (OpenAI)")
+            spinner.start()
+            try:
+                msg = retry_with_backoff(lambda: call_openai(system, user, model=openai_model_override))
+                debug_log(f"OpenAI returned message length: {len(msg)}")
+                providers_tried.append("openai")
+            except Exception as e:
+                debug_log(f"OpenAI failed: {e}")
+                providers_tried.append("openai (failed)")
+                # Only fail hard on non-final provider if it's a critical error
+                if provider == PROVIDER_ORDER[-1]:
+                    print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
+            finally:
+                spinner.stop()
+                
+        elif provider == "gemini":
+            if not GEMINI_API_KEY:
+                debug_log("Skipping Gemini (no API key)")
+                continue
+            debug_log("Trying Gemini...")
+            spinner = Spinner("Generating commit message (Gemini)")
+            spinner.start()
+            try:
+                msg = retry_with_backoff(lambda: call_gemini(system, user))
+                debug_log(f"Gemini returned message length: {len(msg)}")
+                providers_tried.append("gemini")
+            except Exception as e:
+                debug_log(f"Gemini failed: {e}")
+                providers_tried.append("gemini (failed)")
+                # Only fail hard on final provider
+                if provider == PROVIDER_ORDER[-1]:
+                    print(f"LLMCommit: Gemini call failed: {e}", file=sys.stderr)
+            finally:
+                spinner.stop()
+        else:
+            debug_log(f"Unknown provider '{provider}' in pipeline, skipping")
+    
+    debug_log(f"Providers tried: {', '.join(providers_tried)}")
+    
+    # If all providers failed
+    if not msg.strip():
+        print(f"LLMCommit: All providers failed. Tried: {', '.join(providers_tried)}", file=sys.stderr)
+        return 3
 
     debug_log(f"Raw message before normalization: {msg[:500] if msg else '(empty)'}")
     msg = normalize_message(msg)
