@@ -18,6 +18,8 @@
 #   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
 #   GEMINI_MODEL=gemini-pro
+#   CLAUDE_CODE_OAUTH_TOKEN=...  (or ANTHROPIC_API_KEY=...)
+#   CLAUDE_MODEL=claude-sonnet-4-6
 
 from __future__ import annotations
 
@@ -86,10 +88,16 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-1.5-flash"))
 GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", _CONFIG.get("gemini_timeout", "25")))
 
+# CLAUDE_CODE_OAUTH_TOKEN takes precedence; ANTHROPIC_API_KEY is the standard API key alternative.
+CLAUDE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", _CONFIG.get("claude_oauth_token", "")).strip()
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", _CONFIG.get("anthropic_api_key", "")).strip()
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", _CONFIG.get("claude_model", "claude-sonnet-4-6"))
+CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", _CONFIG.get("claude_timeout", "30")))
+
 # Provider pipeline order configuration
 # Can be set via environment variable or config file
-# Format: comma-separated list, e.g., "ollama,openai,gemini"
-provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,openai,gemini"))
+# Format: comma-separated list, e.g., "ollama,claude,openai,gemini"
+provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,claude,openai,gemini"))
 PROVIDER_ORDER = [p.strip().lower() for p in provider_order_str.split(",") if p.strip()]
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
@@ -227,7 +235,7 @@ def inside_git_repo() -> bool:
         return False
 
 
-def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, Optional[str], Optional[str]]:
+def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, Optional[str], Optional[str], Optional[str]]:
     """
     Splits language argument from a list of arguments and detects custom flags.
 
@@ -248,6 +256,7 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, O
         - conventional flag (bool)
         - ollama_model override (Optional[str])
         - openai_model override (Optional[str])
+        - claude_model override (Optional[str])
 
     Raises:
         SystemExit: If required option values are missing.
@@ -258,6 +267,7 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, O
     conventional = False
     ollama_model = None
     openai_model = None
+    claude_model = None
     out: List[str] = []
     i = 0
     while i < len(argv):
@@ -284,7 +294,9 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, O
                 raise SystemExit("LLMCommit: --model requires a value")
             model = argv[i + 1]
             # Auto-detect provider based on model name
-            if model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3"):
+            if model.startswith("claude-"):
+                claude_model = model
+            elif model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3"):
                 openai_model = model
             else:
                 ollama_model = model
@@ -302,9 +314,15 @@ def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, O
             openai_model = argv[i + 1]
             i += 2
             continue
+        elif argv[i] == "--claude-model":
+            if i + 1 >= len(argv):
+                raise SystemExit("LLMCommit: --claude-model requires a value")
+            claude_model = argv[i + 1]
+            i += 2
+            continue
         out.append(argv[i])
         i += 1
-    return lang, out, addall, push, conventional, ollama_model, openai_model
+    return lang, out, addall, push, conventional, ollama_model, openai_model, claude_model
 
 
 def detect_pathspec(args: List[str]) -> List[str]:
@@ -733,6 +751,86 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
         return text.strip()
 
 
+def call_claude(system: str, user: str, timeout_s: int = None, model: str = None) -> str:
+    """
+    Call the Anthropic Messages API to generate a response.
+
+    Authentication priority:
+    1. CLAUDE_CODE_OAUTH_TOKEN  (Bearer token - works with Claude Code login)
+    2. ANTHROPIC_API_KEY        (standard API key)
+
+    Parameters:
+        system (str): The system instructions for the model.
+        user (str): The user message to process.
+        timeout_s (int): Request timeout in seconds. Defaults to CLAUDE_TIMEOUT.
+        model (str): The Anthropic model ID. Defaults to CLAUDE_MODEL.
+
+    Returns:
+        str: The text output from the Claude response.
+    """
+    if timeout_s is None:
+        timeout_s = CLAUDE_TIMEOUT
+    if model is None:
+        model = CLAUDE_MODEL
+
+    if not CLAUDE_OAUTH_TOKEN and not ANTHROPIC_API_KEY:
+        raise RuntimeError("Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set")
+
+    url = "https://api.anthropic.com/v1/messages"
+    payload = {
+        "model": model,
+        "max_tokens": 220,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    if CLAUDE_OAUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {CLAUDE_OAUTH_TOKEN}"
+    else:
+        headers["x-api-key"] = ANTHROPIC_API_KEY
+
+    debug_log(f"Claude request URL: {url}")
+    debug_log(f"Claude model: {model}")
+    debug_log(f"Claude timeout: {timeout_s}s")
+    debug_log(f"Claude auth: {'oauth' if CLAUDE_OAUTH_TOKEN else 'api-key'}")
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            debug_log(f"Claude raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
+            j = json.loads(raw)
+            content = j.get("content", [])
+            if not content:
+                raise RuntimeError("Claude response contained no content")
+            text = content[0].get("text", "")
+            debug_log(f"Claude extracted text: {text[:500] if text else '(empty)'}")
+            if not text:
+                raise RuntimeError("Claude response contained no text output")
+            return text.strip()
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+            error_data = json.loads(body)
+        except Exception:
+            error_data = {}
+        debug_log(f"Claude HTTP {e.code} body: {body}")
+        if e.code == 429:
+            raise RuntimeError("Claude rate limit exceeded. Please try again later.")
+        elif e.code == 401:
+            raise RuntimeError("Claude authentication failed. Check your CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY.")
+        elif e.code == 404:
+            raise RuntimeError(f"Claude model '{model}' not found. Check CLAUDE_MODEL setting.")
+        raise RuntimeError(f"Claude HTTP {e.code}: {error_data.get('error', {}).get('message', body or e.reason)}")
+
+
 def normalize_message(msg: str) -> str:
     """
 
@@ -838,9 +936,9 @@ def main() -> int:
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 2
 
-    lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override = split_lang_arg(sys.argv[1:])
+    lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override, claude_model_override = split_lang_arg(sys.argv[1:])
     debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}, push: {push}, conventional: {conventional}")
-    debug_log(f"Model overrides: ollama={ollama_model_override}, openai={openai_model_override}")
+    debug_log(f"Model overrides: ollama={ollama_model_override}, openai={openai_model_override}, claude={claude_model_override}")
 
     # If --addall is specified, add all untracked files that are not in .gitignore
     if addall:
@@ -951,6 +1049,25 @@ def main() -> int:
             finally:
                 spinner.stop()
                 
+        elif provider == "claude":
+            if not CLAUDE_OAUTH_TOKEN and not ANTHROPIC_API_KEY:
+                debug_log("Skipping Claude (no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)")
+                continue
+            debug_log("Trying Claude...")
+            spinner = Spinner("Generating commit message (Claude)")
+            spinner.start()
+            try:
+                msg = retry_with_backoff(lambda: call_claude(system, user, model=claude_model_override))
+                debug_log(f"Claude returned message length: {len(msg)}")
+                providers_tried.append("claude")
+            except Exception as e:
+                debug_log(f"Claude failed: {e}")
+                providers_tried.append("claude (failed)")
+                if provider == PROVIDER_ORDER[-1]:
+                    print(f"LLMCommit: Claude call failed: {e}", file=sys.stderr)
+            finally:
+                spinner.stop()
+
         elif provider == "gemini":
             if not GEMINI_API_KEY:
                 debug_log("Skipping Gemini (no API key)")
