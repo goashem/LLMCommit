@@ -12,7 +12,7 @@
 #
 # Env vars:
 #   OLLAMA_HOST=http://localhost:11434
-#   OLLAMA_MODEL=qwen3:8b
+#   OLLAMA_MODEL=mistral-small3.2
 #   OPENAI_API_KEY=...
 #   OPENAI_MODEL=gpt-4o-mini
 #   OPENAI_BASE_URL=https://api.openai.com
