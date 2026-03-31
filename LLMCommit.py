@@ -944,7 +944,8 @@ def main() -> int:
     if addall:
         try:
             # Get list of untracked files that are not ignored
-            untracked_files = run_git(["ls-files", "--others", "--exclude-standard"]).strip()
+            # -c core.quotepath=false ensures UTF-8 filenames (ä, ö, etc.) are returned as-is
+            untracked_files = run_git(["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"]).strip()
             if untracked_files:
                 file_list = [f for f in untracked_files.split('\n') if f]
                 debug_log(f"Adding untracked files: {file_list}")
