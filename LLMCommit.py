@@ -45,7 +45,7 @@ def load_config() -> dict:
     3. User-level config (~/.llmcommit.json)
     """
     config = {}
-    
+
     # 1. User-level config
     user_config = Path.home() / ".llmcommit.json"
     if user_config.exists():
@@ -54,7 +54,7 @@ def load_config() -> dict:
                 config.update(json.load(f))
         except Exception as e:
             print(f"Warning: Failed to load user config from {user_config}: {e}", file=sys.stderr)
-    
+
     # 2. Project-level config (overrides user config)
     try:
         git_root = subprocess.run(
@@ -67,7 +67,7 @@ def load_config() -> dict:
                 config.update(json.load(f))
     except Exception:
         pass  # Not in a git repo or config doesn't exist
-    
+
     return config
 
 
@@ -81,7 +81,8 @@ OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", _CONFIG.get("ollama_timeou
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", _CONFIG.get("openai_api_key", "")).strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", _CONFIG.get("openai_model", "gpt-4o-mini"))
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url", "https://api.openai.com")).rstrip("/")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url", "https://api.openai.com")).rstrip(
+    "/")
 OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", _CONFIG.get("openai_timeout", "25")))
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", "")).strip()
@@ -111,11 +112,12 @@ def debug_log(msg: str) -> None:
 
 class Spinner:
     """Simple terminal spinner for progress indication."""
+
     def __init__(self, message="Processing"):
         self.message = message
         self.running = False
         self.thread = None
-    
+
     def start(self):
         """Start the spinner in a separate thread."""
         if DEBUG:  # Don't show spinner in debug mode
@@ -124,7 +126,7 @@ class Spinner:
         self.thread = threading.Thread(target=self._spin)
         self.thread.daemon = True
         self.thread.start()
-    
+
     def stop(self):
         """Stop the spinner."""
         if not self.running:
@@ -135,7 +137,7 @@ class Spinner:
         # Clear the line
         sys.stderr.write('\r' + ' ' * (len(self.message) + 10) + '\r')
         sys.stderr.flush()
-    
+
     def _spin(self):
         """Internal spinning animation."""
         chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -148,12 +150,15 @@ class Spinner:
 
 
 # Best-effort: avoid sending obvious secrets in diffs.
-SECRET_PATTERNS = [re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?-----END .*?PRIVATE KEY-----", re.DOTALL),
-                   re.compile(r"\bAKIA[0-9A-Z]{16}\b"), re.compile(r"\bASIA[0-9A-Z]{16}\b"), re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
-                   re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), re.compile(r"\bAIza[0-9A-Za-z\-_]{30,}\b"),
-                   re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"][^'\"\n]{6,}['\"]"), ]
+SECRET_PATTERNS = [
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?-----END .*?PRIVATE KEY-----", re.DOTALL),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"), re.compile(r"\bASIA[0-9A-Z]{16}\b"), re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z\-_]{30,}\b"),
+    re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"][^'\"\n]{6,}['\"]"), ]
 
-LANG_NAMES = {"en": "English", "fi": "Finnish", "sv": "Swedish", "et": "Estonian", "de": "German", "fr": "French", "es": "Spanish", }
+LANG_NAMES = {"en": "English", "fi": "Finnish", "sv": "Swedish", "et": "Estonian", "de": "German", "fr": "French",
+              "es": "Spanish", }
 
 # If these are present, git commit itself is deciding/using a message; we should not override.
 MESSAGE_CONTROL_FLAGS = {"--no-edit", "--reuse-message", "-C", "--reedit-message", "-c", "--fixup", "--squash", }
@@ -235,7 +240,8 @@ def inside_git_repo() -> bool:
         return False
 
 
-def split_lang_arg(argv: List[str]) -> Tuple[str, List[str], bool, bool, bool, Optional[str], Optional[str], Optional[str]]:
+def split_lang_arg(argv: List[str]) -> Tuple[
+    str, List[str], bool, bool, bool, Optional[str], Optional[str], Optional[str]]:
     """
     Splits language argument from a list of arguments and detects custom flags.
 
@@ -531,7 +537,8 @@ def call_ollama(system: str, user: str, timeout_s: int = None, model: str = None
     if model is None:
         model = OLLAMA_MODEL
     url = f"{OLLAMA_HOST}/api/chat"
-    payload = {"model": model, "stream": False, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    payload = {"model": model, "stream": False,
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"temperature": 0.2}, }
     debug_log(f"Ollama request URL: {url}")
     debug_log(f"Ollama model: {model}")
@@ -568,7 +575,7 @@ def extract_openai_text(j: dict) -> str:
                 content = message.get("content")
                 if isinstance(content, str) and content.strip():
                     return content.strip()
-    
+
     # Fallback for alternative response formats
     return ""
 
@@ -602,7 +609,7 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
     is_reasoning_model = bool(re.match(r"^o[0-9]", OPENAI_MODEL))
     max_tokens = 2000 if is_reasoning_model else 220
     debug_log(f"Model {OPENAI_MODEL} is_reasoning_model={is_reasoning_model}, max_tokens={max_tokens}")
-    
+
     # Build proper Chat Completions API payload
     payload = {
         "model": OPENAI_MODEL,
@@ -612,7 +619,7 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
         ],
         "max_tokens": max_tokens
     }
-    
+
     # Reasoning models don't support temperature
     use_temperature = not is_reasoning_model
     if use_temperature:
@@ -642,9 +649,9 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
             error_data = json.loads(body)
         except Exception:
             error_data = {}
-        
+
         debug_log(f"OpenAI HTTP {e.code} body: {body}")
-        
+
         # Only retry for temperature-specific errors
         if e.code == 400 and use_temperature and body:
             try:
@@ -653,7 +660,8 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
                     print(f"LLMCommit: Model {OPENAI_MODEL} does not support temperature, retrying without it.",
                           file=sys.stderr)
                     payload.pop("temperature", None)
-                    debug_log(f"OpenAI retry payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
+                    debug_log(
+                        f"OpenAI retry payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
                     data = json.dumps(payload).encode("utf-8")
                     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
                     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -667,7 +675,7 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
                         return text.strip()
             except Exception:
                 pass
-        
+
         # Provide helpful error messages for common issues
         if e.code == 429:
             raise RuntimeError(f"OpenAI rate limit exceeded. Please try again later.")
@@ -675,7 +683,7 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
             raise RuntimeError(f"OpenAI authentication failed. Check your OPENAI_API_KEY.")
         elif e.code == 404:
             raise RuntimeError(f"OpenAI model '{OPENAI_MODEL}' not found. Check OPENAI_MODEL setting.")
-        
+
         raise RuntimeError(f"OpenAI HTTP {e.code}: {error_data.get('error', {}).get('message', body or e.reason)}")
 
 
@@ -701,10 +709,10 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
 
     # API key passed in header for security (not in URL)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    
+
     # Combine system and user messages in the format expected by Gemini
     prompt = f"{system}\n\n{user}"
-    
+
     payload = {
         "contents": [{
             "parts": [{
@@ -716,12 +724,12 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
             "maxOutputTokens": 220
         }
     }
-    
+
     debug_log(f"Gemini request URL: {url}")
     debug_log(f"Gemini model: {GEMINI_MODEL}")
     debug_log(f"Gemini timeout: {timeout_s}s")
     debug_log(f"Gemini payload (without prompt): { {k: v for k, v in payload.items() if k != 'contents'} }")
-    
+
     data = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -733,17 +741,17 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
         raw = resp.read().decode("utf-8", errors="replace")
         debug_log(f"Gemini raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
         j = json.loads(raw)
-        
+
         # Extract text from Gemini response
         candidates = j.get("candidates", [])
         if not candidates:
             raise RuntimeError("Gemini response contained no candidates")
-            
+
         content = candidates[0].get("content", {})
         parts = content.get("parts", [])
         if not parts:
             raise RuntimeError("Gemini response contained no parts")
-            
+
         text = parts[0].get("text", "")
         debug_log(f"Gemini extracted text: {text[:500] if text else '(empty)'}")
         if not text:
@@ -936,20 +944,23 @@ def main() -> int:
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 2
 
-    lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override, claude_model_override = split_lang_arg(sys.argv[1:])
+    lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override, claude_model_override = split_lang_arg(
+        sys.argv[1:])
     debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}, push: {push}, conventional: {conventional}")
-    debug_log(f"Model overrides: ollama={ollama_model_override}, openai={openai_model_override}, claude={claude_model_override}")
+    debug_log(
+        f"Model overrides: ollama={ollama_model_override}, openai={openai_model_override}, claude={claude_model_override}")
 
     # If --addall is specified, add all untracked files that are not in .gitignore
     if addall:
         try:
             # Get list of untracked files that are not ignored
             # -c core.quotepath=false ensures UTF-8 filenames (ä, ö, etc.) are returned as-is
-            untracked_files = run_git(["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"]).strip()
+            untracked_files = run_git(
+                ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"]).strip()
             if untracked_files:
                 file_list = [f for f in untracked_files.split('\n') if f]
                 debug_log(f"Adding untracked files: {file_list}")
-                
+
                 failed_files = []
                 for file in file_list:
                     try:
@@ -957,7 +968,7 @@ def main() -> int:
                     except Exception as e:
                         debug_log(f"Failed to add {file}: {e}")
                         failed_files.append(file)
-                
+
                 if failed_files:
                     print(f"LLMCommit: Warning - failed to add {len(failed_files)} file(s):",
                           file=sys.stderr)
@@ -965,7 +976,7 @@ def main() -> int:
                         print(f"  - {f}", file=sys.stderr)
                     if len(failed_files) > 5:
                         print(f"  ... and {len(failed_files) - 5} more", file=sys.stderr)
-                    
+
                     # Ask user if they want to continue
                     try:
                         response = input("Continue with commit anyway? [y/N]: ").strip().lower()
@@ -1011,11 +1022,11 @@ def main() -> int:
     # Try providers in configured order
     msg = ""
     providers_tried = []
-    
+
     for provider in PROVIDER_ORDER:
         if msg.strip():
             break  # Already got a message
-            
+
         if provider == "ollama":
             debug_log("Trying Ollama...")
             spinner = Spinner("Generating commit message (Ollama)")
@@ -1029,7 +1040,7 @@ def main() -> int:
                 providers_tried.append("ollama (failed)")
             finally:
                 spinner.stop()
-                
+
         elif provider == "openai":
             if not OPENAI_API_KEY:
                 debug_log("Skipping OpenAI (no API key)")
@@ -1049,7 +1060,7 @@ def main() -> int:
                     print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
             finally:
                 spinner.stop()
-                
+
         elif provider == "claude":
             if not CLAUDE_OAUTH_TOKEN and not ANTHROPIC_API_KEY:
                 debug_log("Skipping Claude (no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)")
@@ -1090,9 +1101,9 @@ def main() -> int:
                 spinner.stop()
         else:
             debug_log(f"Unknown provider '{provider}' in pipeline, skipping")
-    
+
     debug_log(f"Providers tried: {', '.join(providers_tried)}")
-    
+
     # If all providers failed
     if not msg.strip():
         print(f"LLMCommit: All providers failed. Tried: {', '.join(providers_tried)}", file=sys.stderr)
@@ -1112,7 +1123,7 @@ def main() -> int:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
             f.write(msg)
             temp_path = f.name
-        
+
         try:
             subprocess.run([editor, temp_path], check=True)
             with open(temp_path, 'r') as f:
@@ -1122,7 +1133,7 @@ def main() -> int:
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-        
+
         if not msg:
             print("LLMCommit: Commit message empty, aborting.", file=sys.stderr)
             return 1
