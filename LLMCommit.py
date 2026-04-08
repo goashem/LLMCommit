@@ -98,7 +98,7 @@ CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", _CONFIG.get("claude_timeou
 # Provider pipeline order configuration
 # Can be set via environment variable or config file
 # Format: comma-separated list, e.g., "ollama,claude,openai,gemini"
-provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,claude,openai,gemini"))
+provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "openai,claude,gemini,ollama"))
 PROVIDER_ORDER = [p.strip().lower() for p in provider_order_str.split(",") if p.strip()]
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
