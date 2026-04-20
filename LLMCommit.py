@@ -211,7 +211,14 @@ def run_git(args: List[str]) -> str:
         an error message is provided from the standard error of the
         command.
     """
-    p = subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    p = subprocess.run(
+        ["git", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip() or "git command failed")
     return p.stdout
