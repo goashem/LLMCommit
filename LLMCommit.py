@@ -397,6 +397,18 @@ def head_exists() -> bool:
         return False
 
 
+class NoChangesError(RuntimeError):
+    """Raised when there is simply nothing to commit.
+
+    Separated from other RuntimeErrors so callers can tell the normal "clean
+    tree" case (exit 2) apart from genuine environment failures (exit 4).
+    Before this split both mapped to exit 2, so commitfolders.sh could not
+    report a broken repo without also crying wolf on every clean one - and a
+    warning that fires on healthy repos trains the reader to ignore it
+    (T-429, 2026-08-14).
+    """
+
+
 def build_git_context(args: List[str], max_chars: int = 14000) -> str:
     """
     Determine what diff to summarize:
@@ -437,8 +449,8 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
 
     if not diff.strip():
         # Common case: user didn't stage anything and didn't request -a/--all
-        raise RuntimeError("No changes detected for commit message generation.\n"
-                           "If you meant to commit all tracked changes, use -a. Otherwise stage changes first (git add -A).")
+        raise NoChangesError("No changes detected for commit message generation.\n"
+                             "If you meant to commit all tracked changes, use -a. Otherwise stage changes first (git add -A).")
 
     if len(diff) > max_chars:
         diff = diff[:max_chars] + "\n\n[DIFF TRUNCATED]\n"
@@ -941,15 +953,23 @@ def main() -> int:
     3. Gemini (cloud, final fallback)
 
     Return:
-        int: The exit code indicating the result of the operation; returns 2 if not
-        inside a Git repository or if context building fails, 3 if message
-        generation fails, otherwise returns the subprocess return code from
-        Git commands.
+        int: The exit code indicating the result of the operation:
+        0 committed (and pushed, if --push),
+        1 cancelled by the user, empty message, or a failing git command,
+        2 nothing to commit - the normal outcome for a clean tree, not an error,
+        3 commit message generation failed (all providers exhausted),
+        4 the environment is wrong: not a git repository, --addall failed, or
+          building the diff context blew up for any reason other than an empty diff.
+
+        Codes 2 and 4 were a single code until 2026-08-14 (T-429). Automation
+        that treats "nothing to commit" as a failure produces an alert on every
+        healthy repo, and an alert that is always on gets ignored - including
+        the run where the push really did fail.
     """
     debug_log(f"LLMCommit starting, args: {sys.argv[1:]}")
     if not inside_git_repo():
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
-        return 2
+        return 4
 
     lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override, claude_model_override = split_lang_arg(
         sys.argv[1:])
@@ -995,7 +1015,7 @@ def main() -> int:
                         return 1
         except Exception as e:
             print(f"LLMCommit: Error during --addall: {e}", file=sys.stderr)
-            return 2
+            return 4
 
     # If user chose interactive commit or explicit message behavior, do not override.
     if should_not_autogenerate(git_args):
@@ -1019,9 +1039,12 @@ def main() -> int:
     try:
         ctx = build_git_context(git_args)
         debug_log(f"Context built, length: {len(ctx)}")
-    except Exception as e:
+    except NoChangesError as e:
         print(f"LLMCommit: {e}", file=sys.stderr)
         return 2
+    except Exception as e:
+        print(f"LLMCommit: {e}", file=sys.stderr)
+        return 4
 
     system = system_instructions(lang, conventional)
     user = "Generate a high-quality git commit message for these changes.\n\n" + ctx
