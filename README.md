@@ -216,14 +216,17 @@ On Linux, install `ca-certificates`. On Windows this is rare; talk to IT if you'
 
 ## Security
 
-The tool redacts common secret patterns before sending diffs to LLMs:
+The tool redacts common secret patterns before sending the diff, the file list and `git status` to LLMs:
 
-- Private keys (SSH, RSA, EC)
+- Private keys (PEM blocks: RSA, EC, DSA, OpenSSH, PKCS#8, PGP) and lines that are nothing but base64
 - AWS access keys
-- OpenAI keys (sk-*)
-- GitHub tokens (ghp_*, github_pat_*)
+- OpenAI keys (sk-*, sk-proj-*, sk-svcacct-*, sk-admin-*) and Anthropic keys (sk-ant-*)
+- GitHub tokens (ghp_*, gho_*, ghu_*, ghs_*, ghr_*, github_pat_*)
 - Google API keys (AIza*)
-- Generic patterns (api_key, secret, token, password in quotes)
+- Assignments whose name ends in a secret word, quoted or not: `OPENAI_API_KEY=…`, `"client_secret": "…"`,
+  `password: …`, `**Salasana:** …`
+
+Redaction is best-effort pattern matching, not a guarantee.
 
 It tries Ollama first, so your code stays local unless Ollama fails. Nothing is stored. Each request is independent.
 

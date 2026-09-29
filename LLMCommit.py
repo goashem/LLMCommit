@@ -151,11 +151,22 @@ class Spinner:
 
 # Best-effort: avoid sending obvious secrets in diffs.
 SECRET_PATTERNS = [
-    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?-----END .*?PRIVATE KEY-----", re.DOTALL),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"), re.compile(r"\bASIA[0-9A-Z]{16}\b"), re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    # PEM private key blocks: RSA, EC, DSA, OPENSSH, PKCS#8 (plain or ENCRYPTED) and PGP "PRIVATE KEY BLOCK".
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
+               re.DOTALL),
+    # A line that is nothing but base64: key lines that reach the diff without their BEGIN/END lines,
+    # e.g. as context lines when a note with a pasted key is edited next to the key.
+    re.compile(r"(?m)^[ +-]?[ \t]*[A-Za-z0-9+/]{40,}={0,2}[ \t\r]*$"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"), re.compile(r"\bASIA[0-9A-Z]{16}\b"),
+    # OpenAI (sk-..., sk-proj-..., sk-svcacct-..., sk-admin-...) and Anthropic (sk-ant-api03-..., sk-ant-oat01-...).
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z\-_]{30,}\b"),
-    re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\b\s*[:=]\s*['\"][^'\"\n]{6,}['\"]"), ]
+    # name = value / name: value, quoted or not, when the name ENDS in a secret word: OPENAI_API_KEY=...,
+    # "client_secret": "...", **Salasana:** ... The start of the name stays visible; password_hint and
+    # max_tokens do not match.
+    re.compile(r"(?i)(?:(?:api|access|secret|private)[ _-]?key|secret|token|pass(?:w(?:or)?d|phrase)|salasana|avain)"
+               r"(?!\w)[*'\"]*[ \t]*[:=][*_]*[ \t]*(?:\"[^\"\n]{6,}\"|'[^'\n]{6,}'|[^\s'\"]{6,})"), ]
 
 LANG_NAMES = {"en": "English", "fi": "Finnish", "sv": "Swedish", "et": "Estonian", "de": "German", "fr": "French",
               "es": "Spanish", }
@@ -439,13 +450,14 @@ def build_git_context(args: List[str], max_chars: int = 14000) -> str:
         diff_cmd += ["--", *pathspec]
 
     debug_log(f"build_git_context: ns_cmd={ns_cmd}, diff_cmd={diff_cmd}")
-    name_status = run_git(ns_cmd).strip()
+    # Everything below goes into the prompt, so all of it is sanitized (the diff before truncation).
+    name_status = sanitize_text(run_git(ns_cmd).strip())
     diff = run_git(diff_cmd)
     diff = sanitize_text(diff)
     debug_log(f"build_git_context: diff length={len(diff)}, name_status lines={len(name_status.splitlines())}")
 
     # Helpful extra context
-    status = run_git(["status", "--porcelain=v1"]).strip()
+    status = sanitize_text(run_git(["status", "--porcelain=v1"]).strip())
 
     if not diff.strip():
         # Common case: user didn't stage anything and didn't request -a/--all
