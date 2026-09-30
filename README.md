@@ -66,7 +66,7 @@ Standard `git commit` flags pass through.
 | `OPENAI_BASE_URL`     | `https://api.openai.com` | for OpenAI-compatible APIs   |
 | `OPENAI_TIMEOUT`      | `25`                     | seconds                      |
 | `GEMINI_API_KEY`      | -                        | required for Gemini fallback |
-| `GEMINI_MODEL`        | `gemini-1.5-flash`       |                              |
+| `GEMINI_MODEL`        | `gemini-3.6-flash`       |                              |
 | `GEMINI_TIMEOUT`      | `25`                     | seconds                      |
 | `LLMCOMMIT_PROVIDERS` | `ollama,openai,gemini`   | order to try providers       |
 | `LLMCOMMIT_DEBUG`     | -                        | set to 1 for verbose logs    |
@@ -81,7 +81,7 @@ Put a `.llmcommit.json` in your home directory or project root:
   "ollama_model": "qwen3:8b",
   "ollama_timeout": 30,
   "openai_model": "gpt-4o-mini",
-  "gemini_model": "gemini-1.5-flash"
+  "gemini_model": "gemini-3.6-flash"
 }
 ```
 

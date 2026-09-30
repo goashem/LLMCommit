@@ -17,7 +17,7 @@
 #   OPENAI_MODEL=gpt-4o-mini
 #   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
-#   GEMINI_MODEL=gemini-pro
+#   GEMINI_MODEL=gemini-3.6-flash
 #   CLAUDE_CODE_OAUTH_TOKEN=...  (or ANTHROPIC_API_KEY=...)
 #   CLAUDE_MODEL=claude-sonnet-4-6
 
@@ -86,7 +86,7 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url
 OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", _CONFIG.get("openai_timeout", "25")))
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", "")).strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-1.5-flash"))
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-3.6-flash"))
 GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", _CONFIG.get("gemini_timeout", "25")))
 
 # CLAUDE_CODE_OAUTH_TOKEN takes precedence; ANTHROPIC_API_KEY is the standard API key alternative.
