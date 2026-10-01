@@ -80,7 +80,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", _CONFIG.get("ollama_model", "qwen3
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", _CONFIG.get("ollama_timeout", "30")))
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", _CONFIG.get("openai_api_key", "")).strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", _CONFIG.get("openai_model", "gpt-4o-mini"))
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", _CONFIG.get("openai_model", "gpt-6-luna"))
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url", "https://api.openai.com")).rstrip(
     "/")
 OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", _CONFIG.get("openai_timeout", "25")))
@@ -176,6 +176,15 @@ MESSAGE_CONTROL_FLAGS = {"--no-edit", "--reuse-message", "-C", "--reedit-message
 
 # If interactive staging is requested, the final diff is not known upfront.
 INTERACTIVE_FLAGS = {"-p", "--patch", "-i", "--interactive"}
+
+# OpenAI models that reject max_tokens and take max_completion_tokens instead: the o-series (Chat
+# Completions reference: max_tokens "is not compatible with o-series models") and GPT-5 and GPT-6.
+OPENAI_COMPLETION_TOKENS_MODELS = re.compile(r"^(?:o\d|gpt-[56])")
+# The ones among them that accept reasoning_effort "none" (OpenAI model pages, 2026-10-01). With reasoning
+# off, temperature is accepted again. The rest keep their default effort, which never fails a request:
+# the o-series, gpt-5/-mini/-nano, -pro variants, gpt-6-astra and gpt-6.1-sol (gpt-6-astra answers "none"
+# with HTTP 400). Dated snapshots and other names not listed here are treated the same way.
+OPENAI_EFFORT_NONE_MODELS = re.compile(r"^gpt-(?:5\.\d+(?:-(?:luna|terra|sol|mini|nano))?|6-(?:luna|sol))$")
 
 
 def sanitize_text(s: str) -> str:
@@ -568,7 +577,8 @@ def call_ollama(system: str, user: str, timeout_s: int = None, model: str = None
     if model is None:
         model = OLLAMA_MODEL
     url = f"{OLLAMA_HOST}/api/chat"
-    payload = {"model": model, "stream": False,
+    # think: false skips the reasoning trace of thinking models such as qwen3; others ignore it.
+    payload = {"model": model, "stream": False, "think": False,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"temperature": 0.2}, }
     debug_log(f"Ollama request URL: {url}")
@@ -636,27 +646,33 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
         raise RuntimeError("OPENAI_API_KEY is not set")
 
     url = f"{OPENAI_BASE_URL}/v1/chat/completions"
-    # Reasoning models (o1, o3-mini, etc.) need more tokens for internal reasoning
-    is_reasoning_model = bool(re.match(r"^o[0-9]", OPENAI_MODEL))
+    # A commit message needs no reasoning, so it is turned off where the model allows it. A model that
+    # keeps reasoning needs more tokens for it, and the limit counts reasoning tokens too.
+    uses_completion_tokens = bool(OPENAI_COMPLETION_TOKENS_MODELS.match(model))
+    effort_none = bool(OPENAI_EFFORT_NONE_MODELS.match(model))
+    is_reasoning_model = uses_completion_tokens and not effort_none
     max_tokens = 2000 if is_reasoning_model else 220
-    debug_log(f"Model {OPENAI_MODEL} is_reasoning_model={is_reasoning_model}, max_tokens={max_tokens}")
+    token_param = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
+    debug_log(f"Model {model} is_reasoning_model={is_reasoning_model}, {token_param}={max_tokens}")
 
     # Build proper Chat Completions API payload
     payload = {
-        "model": OPENAI_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
-        "max_tokens": max_tokens
+        token_param: max_tokens
     }
+    if effort_none:
+        payload["reasoning_effort"] = "none"
 
     # Reasoning models don't support temperature
     use_temperature = not is_reasoning_model
     if use_temperature:
         payload["temperature"] = 0.2
     debug_log(f"OpenAI request URL: {url}")
-    debug_log(f"OpenAI model: {OPENAI_MODEL}")
+    debug_log(f"OpenAI model: {model}")
     debug_log(f"OpenAI timeout: {timeout_s}s")
     debug_log(f"OpenAI payload (without messages): { {k: v for k, v in payload.items() if k != 'messages'} }")
     data = json.dumps(payload).encode("utf-8")
@@ -688,7 +704,7 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
             try:
                 error_message = error_data.get("error", {}).get("message", "").lower()
                 if "temperature" in error_message or "not supported" in error_message:
-                    print(f"LLMCommit: Model {OPENAI_MODEL} does not support temperature, retrying without it.",
+                    print(f"LLMCommit: Model {model} does not support temperature, retrying without it.",
                           file=sys.stderr)
                     payload.pop("temperature", None)
                     debug_log(
@@ -713,7 +729,7 @@ def call_openai(system: str, user: str, timeout_s: int = None, model: str = None
         elif e.code == 401:
             raise RuntimeError(f"OpenAI authentication failed. Check your OPENAI_API_KEY.")
         elif e.code == 404:
-            raise RuntimeError(f"OpenAI model '{OPENAI_MODEL}' not found. Check OPENAI_MODEL setting.")
+            raise RuntimeError(f"OpenAI model '{model}' not found. Check OPENAI_MODEL setting.")
 
         raise RuntimeError(f"OpenAI HTTP {e.code}: {error_data.get('error', {}).get('message', body or e.reason)}")
 

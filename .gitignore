@@ -14,5 +14,6 @@ coverage/
 **/*.min.js
 
 /TODO.md
-/DONE.md__pycache__/
+/DONE.md
+__pycache__/
 *.pyc
