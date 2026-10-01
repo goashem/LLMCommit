@@ -10,6 +10,7 @@ GEMINI_*, CLAUDE_*, ANTHROPIC_* or LLMCOMMIT_* variables, so the defaults under 
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -183,6 +184,56 @@ class OllamaRequest(unittest.TestCase):
     def test_default_model_is_qwen3_8b(self):
         self.assertEqual(LLMCommit.OLLAMA_MODEL, "qwen3:8b")
         self.assertEqual(self.send()[1]["model"], "qwen3:8b")
+
+
+# --- defaults and the places that document them --------------------------------------------------
+
+def readme_env_defaults():
+    """{NAME: default} from the README's environment variable table (rows with a `code` default)."""
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    return dict(re.findall(r"(?m)^\|\s*`([A-Z_]+)`\s*\|\s*`([^`]*)`", text))
+
+
+def readme_config_example():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    return json.loads(re.search(r"(?s)### Config files.*?```json\n(.*?)```", text).group(1))
+
+
+def header_comment_values():
+    """{NAME: value} from the '#   NAME=value' lines at the top of LLMCommit.py."""
+    head = (ROOT / "LLMCommit.py").read_text(encoding="utf-8").split("\nfrom __future__", 1)[0]
+    return dict(re.findall(r"(?m)^#\s+([A-Z_]+)=(\S+)", head))
+
+
+class Defaults(unittest.TestCase):
+
+    def test_pipeline_tries_ollama_first_and_the_rest_in_their_old_order(self):
+        self.assertEqual(LLMCommit.PROVIDER_ORDER, ["ollama", "openai", "claude", "gemini"])
+
+    def test_readme_environment_table_matches_the_code(self):
+        rows = readme_env_defaults()
+        for name, value in {"OLLAMA_MODEL": LLMCommit.OLLAMA_MODEL, "OPENAI_MODEL": LLMCommit.OPENAI_MODEL,
+                            "GEMINI_MODEL": LLMCommit.GEMINI_MODEL, "CLAUDE_MODEL": LLMCommit.CLAUDE_MODEL,
+                            "LLMCOMMIT_PROVIDERS": ",".join(LLMCommit.PROVIDER_ORDER)}.items():
+            with self.subTest(name=name):
+                self.assertEqual(rows.get(name), value)
+
+    def test_readme_config_example_uses_the_default_models(self):
+        example = readme_config_example()
+        for key, value in {"ollama_model": LLMCommit.OLLAMA_MODEL, "openai_model": LLMCommit.OPENAI_MODEL,
+                           "gemini_model": LLMCommit.GEMINI_MODEL}.items():
+            with self.subTest(key=key):
+                self.assertEqual(example.get(key), value)
+
+    def test_header_comment_matches_the_code(self):
+        values = header_comment_values()
+        for name in ("OLLAMA_MODEL", "OPENAI_MODEL", "GEMINI_MODEL", "CLAUDE_MODEL"):
+            with self.subTest(name=name):
+                self.assertEqual(values.get(name), getattr(LLMCommit, name))
+
+    def test_main_docstring_lists_the_default_order(self):
+        listed = re.findall(r"(?m)^\s*\d+\.\s+(\w+)", LLMCommit.main.__doc__)
+        self.assertEqual([name.lower() for name in listed], LLMCommit.PROVIDER_ORDER)
 
 
 # --- main() --------------------------------------------------------------------------------------

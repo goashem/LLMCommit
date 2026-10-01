@@ -12,9 +12,9 @@
 #
 # Env vars:
 #   OLLAMA_HOST=http://localhost:11434
-#   OLLAMA_MODEL=mistral-small3.2
+#   OLLAMA_MODEL=qwen3:8b
 #   OPENAI_API_KEY=...
-#   OPENAI_MODEL=gpt-4o-mini
+#   OPENAI_MODEL=gpt-6-luna
 #   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
 #   GEMINI_MODEL=gemini-3.6-flash
@@ -98,7 +98,7 @@ CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", _CONFIG.get("claude_timeou
 # Provider pipeline order configuration
 # Can be set via environment variable or config file
 # Format: comma-separated list, e.g., "ollama,claude,openai,gemini"
-provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "openai,claude,gemini,ollama"))
+provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,openai,claude,gemini"))
 PROVIDER_ORDER = [p.strip().lower() for p in provider_order_str.split(",") if p.strip()]
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
@@ -978,7 +978,11 @@ def main() -> int:
     commit message using the following services in order:
     1. Ollama (local)
     2. OpenAI (cloud)
-    3. Gemini (cloud, final fallback)
+    3. Claude (cloud)
+    4. Gemini (cloud, final fallback)
+
+    That is the default order. LLMCOMMIT_PROVIDERS or the "providers" config key
+    changes it, and a cloud service without a key is skipped.
 
     Return:
         int: The exit code indicating the result of the operation:

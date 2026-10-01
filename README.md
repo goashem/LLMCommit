@@ -1,7 +1,7 @@
 # LLMCommit
 
-A `git commit` wrapper that writes commit messages for you. Tries your local Ollama first, falls back to OpenAI, then
-Gemini.
+A `git commit` wrapper that writes commit messages for you. Tries your local Ollama first, then falls back to OpenAI,
+Claude and Gemini, in that order.
 
 ## What it does
 
@@ -33,6 +33,7 @@ llmcommit -a --push
 - At least one of:
     - Ollama running locally (default: `http://localhost:11434`, model: `qwen3:8b`)
     - OpenAI API key (`OPENAI_API_KEY`)
+    - Claude Code login token (`CLAUDE_CODE_OAUTH_TOKEN`) or Anthropic API key (`ANTHROPIC_API_KEY`)
     - Gemini API key (`GEMINI_API_KEY`)
 
 ## Options
@@ -47,6 +48,7 @@ llmcommit -a --push
 | `--model <name>`        | Override model (auto-detects provider)       |
 | `--ollama-model <name>` | Force a specific Ollama model                |
 | `--openai-model <name>` | Force a specific OpenAI model                |
+| `--claude-model <name>` | Force a specific Claude model                |
 | `--dry-run`             | Show what would happen, don't commit         |
 | `--amend`               | Amend the previous commit                    |
 
@@ -56,20 +58,24 @@ Standard `git commit` flags pass through.
 
 ### Environment variables
 
-| Variable              | Default                  | Notes                        |
-|-----------------------|--------------------------|------------------------------|
-| `OLLAMA_HOST`         | `http://localhost:11434` |                              |
-| `OLLAMA_MODEL`        | `qwen3:8b`               |                              |
-| `OLLAMA_TIMEOUT`      | `30`                     | seconds                      |
-| `OPENAI_API_KEY`      | -                        | required for OpenAI fallback |
-| `OPENAI_MODEL`        | `gpt-4o-mini`            |                              |
-| `OPENAI_BASE_URL`     | `https://api.openai.com` | for OpenAI-compatible APIs   |
-| `OPENAI_TIMEOUT`      | `25`                     | seconds                      |
-| `GEMINI_API_KEY`      | -                        | required for Gemini fallback |
-| `GEMINI_MODEL`        | `gemini-3.6-flash`       |                              |
-| `GEMINI_TIMEOUT`      | `25`                     | seconds                      |
-| `LLMCOMMIT_PROVIDERS` | `ollama,openai,gemini`   | order to try providers       |
-| `LLMCOMMIT_DEBUG`     | -                        | set to 1 for verbose logs    |
+| Variable                  | Default                       | Notes                                    |
+|---------------------------|-------------------------------|------------------------------------------|
+| `OLLAMA_HOST`             | `http://localhost:11434`      |                                          |
+| `OLLAMA_MODEL`            | `qwen3:8b`                    |                                          |
+| `OLLAMA_TIMEOUT`          | `30`                          | seconds                                  |
+| `OPENAI_API_KEY`          | -                             | required for OpenAI fallback             |
+| `OPENAI_MODEL`            | `gpt-6-luna`                  | sent with reasoning off where supported  |
+| `OPENAI_BASE_URL`         | `https://api.openai.com`      | for OpenAI-compatible APIs               |
+| `OPENAI_TIMEOUT`          | `25`                          | seconds                                  |
+| `CLAUDE_CODE_OAUTH_TOKEN` | -                             | Claude fallback; used if both are set    |
+| `ANTHROPIC_API_KEY`       | -                             | Claude fallback, standard API key        |
+| `CLAUDE_MODEL`            | `claude-sonnet-4-6`           |                                          |
+| `CLAUDE_TIMEOUT`          | `30`                          | seconds                                  |
+| `GEMINI_API_KEY`          | -                             | required for Gemini fallback             |
+| `GEMINI_MODEL`            | `gemini-3.6-flash`            |                                          |
+| `GEMINI_TIMEOUT`          | `25`                          | seconds                                  |
+| `LLMCOMMIT_PROVIDERS`     | `ollama,openai,claude,gemini` | order to try providers                   |
+| `LLMCOMMIT_DEBUG`         | -                             | set to 1 for verbose logs                |
 
 ### Config files
 
@@ -80,7 +86,7 @@ Put a `.llmcommit.json` in your home directory or project root:
   "ollama_host": "http://localhost:11434",
   "ollama_model": "qwen3:8b",
   "ollama_timeout": 30,
-  "openai_model": "gpt-4o-mini",
+  "openai_model": "gpt-6-luna",
   "gemini_model": "gemini-3.6-flash"
 }
 ```
@@ -93,7 +99,7 @@ Change which providers are tried and in what order:
 
 ```bash
 # Skip Ollama, cloud only
-export LLMCOMMIT_PROVIDERS="openai,gemini"
+export LLMCOMMIT_PROVIDERS="openai,claude,gemini"
 
 # Local only, no cloud
 export LLMCOMMIT_PROVIDERS="ollama"
@@ -193,6 +199,11 @@ If you pass `-m`, `-F`, `--template`, `--no-edit`, `--fixup`, `--squash`, `-C`, 
 - Check `OPENAI_API_KEY` is set
 - Verify it at https://platform.openai.com/api-keys
 
+**Claude failing**
+
+- Check `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is set; the OAuth token wins if both are
+- Get an API key at https://console.anthropic.com/
+
 **Gemini failing**
 
 - Check `GEMINI_API_KEY` is set
@@ -228,7 +239,9 @@ The tool redacts common secret patterns before sending the diff, the file list a
 
 Redaction is best-effort pattern matching, not a guarantee.
 
-It tries Ollama first, so your code stays local unless Ollama fails. Nothing is stored. Each request is independent.
+By default it tries Ollama first, so your code stays local unless Ollama fails. If `LLMCOMMIT_PROVIDERS` or the
+`providers` config key puts a cloud provider first, the diff goes to that provider instead. Nothing is stored. Each
+request is independent.
 
 ## Contributing
 
