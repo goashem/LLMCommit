@@ -17,9 +17,9 @@
 #   OPENAI_MODEL=gpt-6-luna
 #   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
-#   GEMINI_MODEL=gemini-3.6-flash
+#   GEMINI_MODEL=gemini-3.5-flash-lite
 #   CLAUDE_CODE_OAUTH_TOKEN=...  (or ANTHROPIC_API_KEY=...)
-#   CLAUDE_MODEL=claude-sonnet-4-6
+#   CLAUDE_MODEL=claude-haiku-4-5-20251001
 
 from __future__ import annotations
 
@@ -86,13 +86,13 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url
 OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", _CONFIG.get("openai_timeout", "25")))
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", "")).strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-3.6-flash"))
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-3.5-flash-lite"))
 GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", _CONFIG.get("gemini_timeout", "25")))
 
 # CLAUDE_CODE_OAUTH_TOKEN takes precedence; ANTHROPIC_API_KEY is the standard API key alternative.
 CLAUDE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", _CONFIG.get("claude_oauth_token", "")).strip()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", _CONFIG.get("anthropic_api_key", "")).strip()
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", _CONFIG.get("claude_model", "claude-sonnet-4-6"))
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", _CONFIG.get("claude_model", "claude-haiku-4-5-20251001"))
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", _CONFIG.get("claude_timeout", "30")))
 
 # Provider pipeline order configuration
@@ -174,8 +174,10 @@ LANG_NAMES = {"en": "English", "fi": "Finnish", "sv": "Swedish", "et": "Estonian
 # If these are present, git commit itself is deciding/using a message; we should not override.
 MESSAGE_CONTROL_FLAGS = {"--no-edit", "--reuse-message", "-C", "--reedit-message", "-c", "--fixup", "--squash", }
 
-# If interactive staging is requested, the final diff is not known upfront.
-INTERACTIVE_FLAGS = {"-p", "--patch", "-i", "--interactive"}
+# If interactive staging is requested, the final diff is not known upfront. --interactive is not one of
+# these: LLMCommit takes it as an alias of --review (main()), so it never reaches git. Nor is -i, which
+# in git is --include, not interactive.
+INTERACTIVE_FLAGS = {"-p", "--patch"}
 
 # OpenAI models that reject max_tokens and take max_completion_tokens instead: the o-series (Chat
 # Completions reference: max_tokens "is not compatible with o-series models") and GPT-5 and GPT-6.
@@ -432,11 +434,11 @@ class NoChangesError(RuntimeError):
 def build_git_context(args: List[str], max_chars: int = 14000) -> str:
     """
     Determine what diff to summarize:
-    - If -a/--all/--include is present, include working tree tracked changes vs HEAD.
+    - If -a/--all/-i/--include is present, include working tree tracked changes vs HEAD.
     - Else summarize staged index (--cached).
     Apply pathspec only if provided via '-- <paths...>'.
     """
-    include_worktree = any(a in args for a in ("-a", "--all", "--include"))
+    include_worktree = any(a in args for a in ("-a", "--all", "-i", "--include"))
     pathspec = detect_pathspec(args)
     has_head = head_exists()
     debug_log(f"build_git_context: include_worktree={include_worktree}, pathspec={pathspec}, has_head={has_head}")
@@ -530,27 +532,21 @@ def system_instructions(lang_code: str, conventional: bool = False) -> str:
 
 
 def retry_with_backoff(func, max_retries=3, base_delay=1.0):
-    """Retry a function with exponential backoff for transient failures."""
+    """Retry a function with exponential backoff, but only on transient HTTP errors: 429 and 5xx.
+
+    Anything else is raised at once, so the next provider gets its turn without delay: a 4xx such
+    as Ollama's 404 for a model that is not pulled, or a connection that is refused.
+    """
     for attempt in range(max_retries):
         try:
             return func()
-        except urllib.error.URLError as e:
-            # Network errors, timeouts - retry these
-            if attempt == max_retries - 1:
+        except urllib.error.HTTPError as e:
+            transient = e.code == 429 or 500 <= e.code < 600
+            if not transient or attempt == max_retries - 1:
                 raise
             delay = base_delay * (2 ** attempt)
-            debug_log(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
+            debug_log(f"HTTP {e.code} on attempt {attempt + 1}. Retrying in {delay}s...")
             time.sleep(delay)
-        except urllib.error.HTTPError as e:
-            # Don't retry client errors (4xx) except rate limits
-            if e.code == 429:  # Rate limit
-                if attempt == max_retries - 1:
-                    raise
-                delay = base_delay * (2 ** attempt)
-                debug_log(f"Rate limited. Retrying in {delay}s...")
-                time.sleep(delay)
-            else:
-                raise
     raise RuntimeError("Max retries exceeded")
 
 
@@ -760,6 +756,8 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
     # Combine system and user messages in the format expected by Gemini
     prompt = f"{system}\n\n{user}"
 
+    # Gemini 3.x deprecated temperature (2026-07-21). Thinking is kept minimal, and since thought tokens
+    # count against maxOutputTokens, the limit leaves room for them.
     payload = {
         "contents": [{
             "parts": [{
@@ -767,8 +765,8 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
             }]
         }],
         "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 220
+            "maxOutputTokens": 1024,
+            "thinkingConfig": {"thinkingLevel": "MINIMAL"}
         }
     }
 

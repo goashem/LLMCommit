@@ -8,6 +8,7 @@ GEMINI_*, CLAUDE_*, ANTHROPIC_* or LLMCOMMIT_* variables, so the defaults under 
 """
 
 import importlib.util
+import io
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -186,6 +188,113 @@ class OllamaRequest(unittest.TestCase):
         self.assertEqual(self.send()[1]["model"], "qwen3:8b")
 
 
+# --- retry_with_backoff() ------------------------------------------------------------------------
+
+def http_error(code):
+    return urllib.error.HTTPError("http://localhost:11434/api/chat", code, f"HTTP {code}", {}, io.BytesIO(b"{}"))
+
+
+class Retries(unittest.TestCase):
+    """Only transient failures (429, 5xx) are retried. Anything else hands over to the next provider at once."""
+
+    def attempts(self, *outcomes):
+        """retry_with_backoff() over outcomes (an exception is raised, anything else returned).
+
+        Returns (the result or the exception raised, number of calls, number of sleeps)."""
+        calls = []
+
+        def func():
+            outcome = outcomes[len(calls)]
+            calls.append(outcome)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        with mock.patch.object(LLMCommit.time, "sleep") as sleep:
+            try:
+                result = LLMCommit.retry_with_backoff(func)
+            except Exception as e:
+                result = e
+        return result, len(calls), sleep.call_count
+
+    def test_ollama_model_not_found_is_tried_once(self):
+        # Ollama answers 404 for a model that is not pulled. It is first in the pipeline, so three attempts
+        # would hold up every commit by the 1 s + 2 s backoff before the next provider is tried.
+        urlopen = mock.Mock(side_effect=http_error(404))
+        with (mock.patch("urllib.request.urlopen", urlopen),
+              mock.patch.object(LLMCommit.time, "sleep") as sleep):
+            with self.assertRaises(urllib.error.HTTPError):
+                LLMCommit.retry_with_backoff(lambda: LLMCommit.call_ollama("system", "user"))
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_client_errors_are_not_retried(self):
+        for code in (400, 401, 403, 404):
+            with self.subTest(code=code):
+                result, calls, sleeps = self.attempts(*[http_error(code)] * 3)
+                self.assertEqual((getattr(result, "code", result), calls, sleeps), (code, 1, 0))
+
+    def test_connection_errors_are_not_retried(self):
+        # A refused connection (Ollama not running) is not a 429 or a 5xx either.
+        refused = urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+        result, calls, sleeps = self.attempts(refused, refused, refused)
+        self.assertEqual((result, calls, sleeps), (refused, 1, 0))
+
+    def test_rate_limit_and_server_errors_are_retried(self):
+        for code in (429, 500, 502, 503):
+            with self.subTest(code=code):
+                self.assertEqual(self.attempts(http_error(code), "Update notes"), ("Update notes", 2, 1))
+
+    def test_gives_up_after_three_attempts(self):
+        result, calls, sleeps = self.attempts(*[http_error(503)] * 3)
+        self.assertEqual((getattr(result, "code", result), calls, sleeps), (503, 3, 2))
+
+
+# --- call_gemini() and call_claude() -------------------------------------------------------------
+
+GEMINI_REPLY = {"candidates": [{"content": {"role": "model", "parts": [{"text": "Update notes"}]}}]}
+CLAUDE_REPLY = {"content": [{"type": "text", "text": "Update notes"}]}
+
+
+class GeminiRequest(unittest.TestCase):
+
+    def send(self):
+        requests, urlopen = recorder(GEMINI_REPLY)
+        with (mock.patch.object(LLMCommit, "GEMINI_API_KEY", "placeholder"),
+              mock.patch("urllib.request.urlopen", urlopen)):
+            self.assertEqual(LLMCommit.call_gemini("system", "user"), "Update notes")
+        self.assertEqual(len(requests), 1)
+        return requests[0]
+
+    def test_default_model_is_gemini_3_5_flash_lite(self):
+        self.assertEqual(LLMCommit.GEMINI_MODEL, "gemini-3.5-flash-lite")
+        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", self.send()[0])
+
+    def test_minimal_thinking_and_no_temperature(self):
+        # Gemini 3.x deprecated temperature on 2026-07-21. Thinking counts against maxOutputTokens, so the
+        # limit leaves room for it.
+        config = self.send()[1]["generationConfig"]
+        self.assertNotIn("temperature", config)
+        self.assertEqual(config.get("thinkingConfig"), {"thinkingLevel": "MINIMAL"})
+        self.assertEqual(config.get("maxOutputTokens"), 1024)
+
+
+class ClaudeRequest(unittest.TestCase):
+
+    def test_default_model_is_claude_haiku_4_5(self):
+        self.assertEqual(LLMCommit.CLAUDE_MODEL, "claude-haiku-4-5-20251001")
+        requests, urlopen = recorder(CLAUDE_REPLY)
+        with (mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "CLAUDE_OAUTH_TOKEN", ""),
+              mock.patch("urllib.request.urlopen", urlopen)):
+            self.assertEqual(LLMCommit.call_claude("system", "user"), "Update notes")
+        payload = requests[0][1]
+        self.assertEqual(payload["model"], "claude-haiku-4-5-20251001")
+        # Nothing else changes: no thinking field, the same output limit.
+        self.assertNotIn("thinking", payload)
+        self.assertEqual(payload["max_tokens"], 220)
+
+
 # --- defaults and the places that document them --------------------------------------------------
 
 def readme_env_defaults():
@@ -221,7 +330,7 @@ class Defaults(unittest.TestCase):
     def test_readme_config_example_uses_the_default_models(self):
         example = readme_config_example()
         for key, value in {"ollama_model": LLMCommit.OLLAMA_MODEL, "openai_model": LLMCommit.OPENAI_MODEL,
-                           "gemini_model": LLMCommit.GEMINI_MODEL}.items():
+                           "claude_model": LLMCommit.CLAUDE_MODEL, "gemini_model": LLMCommit.GEMINI_MODEL}.items():
             with self.subTest(key=key):
                 self.assertEqual(example.get(key), value)
 
@@ -234,6 +343,15 @@ class Defaults(unittest.TestCase):
     def test_main_docstring_lists_the_default_order(self):
         listed = re.findall(r"(?m)^\s*\d+\.\s+(\w+)", LLMCommit.main.__doc__)
         self.assertEqual([name.lower() for name in listed], LLMCommit.PROVIDER_ORDER)
+
+    def test_readme_lists_only_flags_that_skip_generation(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        listed = re.search(r"(?s)## When it won't generate a message\n\nIf you pass (.*?), the tool runs", text).group(1)
+        flags = re.findall(r"`(-[^`]+)`", listed)
+        self.assertTrue(flags)
+        for flag in flags:
+            with self.subTest(flag=flag):
+                self.assertTrue(LLMCommit.should_not_autogenerate([flag]))
 
 
 # --- main() --------------------------------------------------------------------------------------
@@ -291,6 +409,66 @@ class ModelFlags(TempRepo):
         rc, requests = self.run_main("-a", "--model", "gpt-4.1-mini")
         self.assertEqual(rc, 0)
         self.assertEqual([body["model"] for _url, body in requests], ["gpt-4.1-mini"])
+
+
+class ReviewFlag(TempRepo):
+    """--interactive is LLMCommit's alias of --review, not git's interactive staging."""
+
+    def test_interactive_is_not_a_reason_to_skip_generation(self):
+        self.assertFalse(LLMCommit.should_not_autogenerate(["-a", "--interactive"]))
+        # Control: interactive staging still passes through to git.
+        for flag in ("-p", "--patch"):
+            with self.subTest(flag=flag):
+                self.assertTrue(LLMCommit.should_not_autogenerate(["-a", flag]))
+
+    def test_interactive_opens_the_generated_message_in_the_editor(self):
+        editor_dir = tempfile.mkdtemp(prefix="llmcommit-test-editor-")
+        self.addCleanup(shutil.rmtree, editor_dir, ignore_errors=True)
+        editor = Path(editor_dir) / "editor.sh"
+        editor.write_text('#!/bin/sh\nprintf "Reviewed: %s\\n" "$(head -n 1 "$1")" > "$1.new" && mv "$1.new" "$1"\n')
+        editor.chmod(0o755)
+        real_run = subprocess.run
+
+        def run(cmd, *args, **kwargs):
+            # git's own --interactive would wait for input on the terminal: fail instead.
+            if list(cmd[:2]) == ["git", "commit"] and "--interactive" in cmd:
+                raise AssertionError(f"--interactive was passed to git: {cmd}")
+            return real_run(cmd, *args, **kwargs)
+
+        with (mock.patch.object(LLMCommit.subprocess, "run", run),
+              mock.patch.dict(os.environ, {"EDITOR": str(editor)})):
+            rc, requests = self.run_main("-a", "--interactive")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(git("log", "-1", "--format=%s").strip(), "Reviewed: Update notes")
+
+
+class IncludeFlag(TempRepo):
+    """-i is git's short form of --include: commit what is staged plus the given paths."""
+
+    CHANGE = "+- [x] Soita Kapsiin"  # the uncommitted change TempRepo leaves in notes/todo.md
+
+    def test_short_and_long_form_are_read_alike(self):
+        for flag in ("-i", "--include"):
+            with self.subTest(flag=flag):
+                args = [flag, "notes/todo.md"]
+                self.assertFalse(LLMCommit.should_not_autogenerate(args))
+                self.assertIn(self.CHANGE, LLMCommit.build_git_context(args))
+
+    def test_include_generates_the_message_without_opening_an_editor(self):
+        editor_dir = tempfile.mkdtemp(prefix="llmcommit-test-editor-")
+        self.addCleanup(shutil.rmtree, editor_dir, ignore_errors=True)
+        opened = Path(editor_dir) / "editor-was-opened"
+        editor = Path(editor_dir) / "editor.sh"
+        editor.write_text(f'#!/bin/sh\ntouch "{opened}"\nexit 1\n')
+        editor.chmod(0o755)
+        with mock.patch.dict(os.environ, {"GIT_EDITOR": str(editor)}):
+            rc, requests = self.run_main("-i", "notes/todo.md")
+        self.assertFalse(opened.exists(), "git opened the editor: no message was generated")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(requests), 1)
+        self.assertIn(self.CHANGE, requests[0][1]["messages"][1]["content"])
+        self.assertEqual(git("log", "-1", "--format=%s").strip(), "Update notes")
 
 
 if __name__ == "__main__":

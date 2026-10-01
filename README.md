@@ -44,6 +44,7 @@ llmcommit -a --push
 | `--addall`              | Stage all untracked files first              |
 | `--push`                | Push after committing                        |
 | `--review`              | Open message in $EDITOR before committing    |
+| `--interactive`         | Same as `--review` (not git's own flag)      |
 | `--conventional`        | Use conventional commits format              |
 | `--model <name>`        | Override model (auto-detects provider)       |
 | `--ollama-model <name>` | Force a specific Ollama model                |
@@ -69,10 +70,10 @@ Standard `git commit` flags pass through.
 | `OPENAI_TIMEOUT`          | `25`                          | seconds                                  |
 | `CLAUDE_CODE_OAUTH_TOKEN` | -                             | Claude fallback; used if both are set    |
 | `ANTHROPIC_API_KEY`       | -                             | Claude fallback, standard API key        |
-| `CLAUDE_MODEL`            | `claude-sonnet-4-6`           |                                          |
+| `CLAUDE_MODEL`            | `claude-haiku-4-5-20251001`   |                                          |
 | `CLAUDE_TIMEOUT`          | `30`                          | seconds                                  |
 | `GEMINI_API_KEY`          | -                             | required for Gemini fallback             |
-| `GEMINI_MODEL`            | `gemini-3.6-flash`            |                                          |
+| `GEMINI_MODEL`            | `gemini-3.5-flash-lite`       | sent with minimal thinking               |
 | `GEMINI_TIMEOUT`          | `25`                          | seconds                                  |
 | `LLMCOMMIT_PROVIDERS`     | `ollama,openai,claude,gemini` | order to try providers                   |
 | `LLMCOMMIT_DEBUG`         | -                             | set to 1 for verbose logs                |
@@ -87,7 +88,8 @@ Put a `.llmcommit.json` in your home directory or project root:
   "ollama_model": "qwen3:8b",
   "ollama_timeout": 30,
   "openai_model": "gpt-6-luna",
-  "gemini_model": "gemini-3.6-flash"
+  "claude_model": "claude-haiku-4-5-20251001",
+  "gemini_model": "gemini-3.5-flash-lite"
 }
 ```
 
@@ -165,7 +167,7 @@ llmcommit --conventional
 llmcommit -a --conventional --review --push
 
 # Custom model
-llmcommit --model gpt-4o
+llmcommit --model gpt-6-sol
 llmcommit --ollama-model llama3:70b
 
 # Debug
@@ -174,8 +176,9 @@ LLMCOMMIT_DEBUG=1 llmcommit -a
 
 ## When it won't generate a message
 
-If you pass `-m`, `-F`, `--template`, `--no-edit`, `--fixup`, `--squash`, `-C`, `-c`, `-p`, or `-i`, the tool runs
-`git commit` normally without generating anything. It assumes you know what you're doing.
+If you pass `-m`, `-F`, `--template`, `--no-edit`, `--fixup`, `--squash`, `-C`, `-c` or `-p`, the tool runs `git commit`
+normally without generating anything. It assumes you know what you're doing. `-i` is git's `--include` and does not stop
+the message from being generated.
 
 ## Troubleshooting
 
@@ -245,7 +248,7 @@ request is independent.
 
 ## Contributing
 
-Keep it a single file with zero dependencies. Test all three providers. Update the README if you add features.
+Keep it a single file with zero dependencies. Test all four providers. Update the README if you add features.
 
 ## Licence
 
@@ -264,7 +267,7 @@ Open source. Use it however you want.
 - Retry with exponential backoff
 - Fixed OpenAI API integration
 - Fixed Gemini API key exposure (now in headers, not URL)
-- Updated default models (`gpt-4o-mini`, `gemini-1.5-flash`)
+- Updated default models (`qwen3:8b`, `gpt-6-luna`, `claude-haiku-4-5-20251001`, `gemini-3.5-flash-lite`)
 
 ### Earlier
 
