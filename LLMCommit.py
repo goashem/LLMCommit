@@ -757,7 +757,9 @@ def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
     prompt = f"{system}\n\n{user}"
 
     # Gemini 3.x deprecated temperature (2026-07-21). Thinking is kept minimal, and since thought tokens
-    # count against maxOutputTokens, the limit leaves room for them.
+    # count against maxOutputTokens, the limit leaves room for them. Google's thinking docs (2026-09-25)
+    # list "minimal" only for gemini-3.5-flash-lite and gemini-3.6-flash; 3.7 and 3.8 Flash take low,
+    # medium or high, so check the level whenever GEMINI_MODEL changes.
     payload = {
         "contents": [{
             "parts": [{
