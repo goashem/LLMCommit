@@ -275,3 +275,8 @@ Open source. Use it however you want.
 - Multi-language messages
 - `--addall` and `--push`
 - Secret redaction
+
+## Provenance
+
+LLMCommit is written mostly by AI coding assistants. I define the requirements and approve the changes; the
+assistant writes most of the code.
