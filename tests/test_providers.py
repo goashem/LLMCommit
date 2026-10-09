@@ -279,20 +279,55 @@ class GeminiRequest(unittest.TestCase):
         self.assertEqual(config.get("maxOutputTokens"), 1024)
 
 
+CLAUDE_THINKING_REPLY = {"content": [{"type": "thinking", "thinking": "Summarise the diff.", "signature": "sig"},
+                                     {"type": "text", "text": "Update notes"}]}
+
+
 class ClaudeRequest(unittest.TestCase):
 
-    def test_default_model_is_claude_haiku_4_5(self):
-        self.assertEqual(LLMCommit.CLAUDE_MODEL, "claude-haiku-4-5-20251001")
-        requests, urlopen = recorder(CLAUDE_REPLY)
-        with (mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", "placeholder"),
-              mock.patch.object(LLMCommit, "CLAUDE_OAUTH_TOKEN", ""),
+    def send(self, model=None, reply=CLAUDE_REPLY, api_key="placeholder", oauth_token=""):
+        """(urllib Request, JSON body, return value) of one call_claude() call."""
+        sent = []
+
+        def urlopen(req, timeout=None):
+            sent.append(req)
+            return Reply(reply)
+
+        with (mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", api_key),
+              mock.patch.object(LLMCommit, "CLAUDE_OAUTH_TOKEN", oauth_token),
               mock.patch("urllib.request.urlopen", urlopen)):
-            self.assertEqual(LLMCommit.call_claude("system", "user"), "Update notes")
-        payload = requests[0][1]
-        self.assertEqual(payload["model"], "claude-haiku-4-5-20251001")
-        # Nothing else changes: no thinking field, the same output limit.
-        self.assertNotIn("thinking", payload)
-        self.assertEqual(payload["max_tokens"], 220)
+            text = LLMCommit.call_claude("system", "user", model=model)
+        return sent[0], json.loads(sent[0].data), text
+
+    def test_default_model_is_claude_haiku_5_5_with_thinking_off(self):
+        # Haiku 5.5 thinks by default, and thinking counts against max_tokens, so a short limit could
+        # end before any text. Haiku 5.5 accepts thinking disabled.
+        self.assertEqual(LLMCommit.CLAUDE_MODEL, "claude-haiku-5-5")
+        _, payload, text = self.send()
+        self.assertEqual(text, "Update notes")
+        self.assertEqual(payload["model"], "claude-haiku-5-5")
+        self.assertEqual(payload["thinking"], {"type": "disabled"})
+        self.assertEqual(payload["max_tokens"], 300)
+        self.assertNotIn("temperature", payload)
+
+    def test_only_haiku_5_gets_the_thinking_field(self):
+        # Haiku 4.5 does not think unless asked; Sonnet 5.5 and Opus 5.5 reject thinking disabled with a 400.
+        for model in ("claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"):
+            with self.subTest(model=model):
+                self.assertNotIn("thinking", self.send(model=model)[1])
+
+    def test_text_is_read_past_a_thinking_block(self):
+        self.assertEqual(self.send(reply=CLAUDE_THINKING_REPLY)[2], "Update notes")
+
+    def test_api_key_wins_over_the_oauth_token(self):
+        req = self.send(api_key="placeholder", oauth_token="oauth-placeholder")[0]
+        self.assertEqual(req.get_header("X-api-key"), "placeholder")
+        self.assertIsNone(req.get_header("Authorization"))
+
+    def test_oauth_token_is_used_only_without_an_api_key(self):
+        req = self.send(api_key="", oauth_token="oauth-placeholder")[0]
+        self.assertEqual(req.get_header("Authorization"), "Bearer oauth-placeholder")
+        self.assertIsNone(req.get_header("X-api-key"))
 
 
 # --- defaults and the places that document them --------------------------------------------------
