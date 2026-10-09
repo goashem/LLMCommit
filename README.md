@@ -33,7 +33,7 @@ llmcommit -a --push
 - At least one of:
     - Ollama running locally (default: `http://localhost:11434`, model: `qwen3:8b`)
     - OpenAI API key (`OPENAI_API_KEY`)
-    - Claude Code login token (`CLAUDE_CODE_OAUTH_TOKEN`) or Anthropic API key (`ANTHROPIC_API_KEY`)
+    - Anthropic API key (`ANTHROPIC_API_KEY`) or Claude Code login token (`CLAUDE_CODE_OAUTH_TOKEN`)
     - Gemini API key (`GEMINI_API_KEY`)
 
 ## Options
@@ -68,9 +68,9 @@ Standard `git commit` flags pass through.
 | `OPENAI_MODEL`            | `gpt-6-luna`                  | sent with reasoning off where supported  |
 | `OPENAI_BASE_URL`         | `https://api.openai.com`      | for OpenAI-compatible APIs               |
 | `OPENAI_TIMEOUT`          | `25`                          | seconds                                  |
-| `CLAUDE_CODE_OAUTH_TOKEN` | -                             | Claude fallback; used if both are set    |
-| `ANTHROPIC_API_KEY`       | -                             | Claude fallback, standard API key        |
-| `CLAUDE_MODEL`            | `claude-haiku-4-5-20251001`   |                                          |
+| `CLAUDE_CODE_OAUTH_TOKEN` | -                             | Claude, used only without an API key     |
+| `ANTHROPIC_API_KEY`       | -                             | Claude, wins when both are set           |
+| `CLAUDE_MODEL`            | `claude-haiku-5-5`            | sent with thinking disabled              |
 | `CLAUDE_TIMEOUT`          | `30`                          | seconds                                  |
 | `GEMINI_API_KEY`          | -                             | required for Gemini fallback             |
 | `GEMINI_MODEL`            | `gemini-3.5-flash-lite`       | sent with minimal thinking               |
@@ -88,7 +88,7 @@ Put a `.llmcommit.json` in your home directory or project root:
   "ollama_model": "qwen3:8b",
   "ollama_timeout": 30,
   "openai_model": "gpt-6-luna",
-  "claude_model": "claude-haiku-4-5-20251001",
+  "claude_model": "claude-haiku-5-5",
   "gemini_model": "gemini-3.5-flash-lite"
 }
 ```
@@ -204,7 +204,7 @@ the message from being generated.
 
 **Claude failing**
 
-- Check `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is set; the OAuth token wins if both are
+- Check `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set; the API key wins if both are set
 - Get an API key at https://console.anthropic.com/
 
 **Gemini failing**

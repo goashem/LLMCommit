@@ -18,8 +18,8 @@
 #   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
 #   GEMINI_MODEL=gemini-3.5-flash-lite
-#   CLAUDE_CODE_OAUTH_TOKEN=...  (or ANTHROPIC_API_KEY=...)
-#   CLAUDE_MODEL=claude-haiku-4-5-20251001
+#   ANTHROPIC_API_KEY=...  (or CLAUDE_CODE_OAUTH_TOKEN=...)
+#   CLAUDE_MODEL=claude-haiku-5-5
 
 from __future__ import annotations
 
@@ -89,10 +89,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-3.5-flash-lite"))
 GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", _CONFIG.get("gemini_timeout", "25")))
 
-# CLAUDE_CODE_OAUTH_TOKEN takes precedence; ANTHROPIC_API_KEY is the standard API key alternative.
+# ANTHROPIC_API_KEY takes precedence; CLAUDE_CODE_OAUTH_TOKEN is used only without it, because the
+# subscription token is meant for Claude Code itself.
 CLAUDE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", _CONFIG.get("claude_oauth_token", "")).strip()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", _CONFIG.get("anthropic_api_key", "")).strip()
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", _CONFIG.get("claude_model", "claude-haiku-4-5-20251001"))
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", _CONFIG.get("claude_model", "claude-haiku-5-5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", _CONFIG.get("claude_timeout", "30")))
 
 # Provider pipeline order configuration
@@ -811,8 +812,8 @@ def call_claude(system: str, user: str, timeout_s: int = None, model: str = None
     Call the Anthropic Messages API to generate a response.
 
     Authentication priority:
-    1. CLAUDE_CODE_OAUTH_TOKEN  (Bearer token - works with Claude Code login)
-    2. ANTHROPIC_API_KEY        (standard API key)
+    1. ANTHROPIC_API_KEY        (standard API key)
+    2. CLAUDE_CODE_OAUTH_TOKEN  (Bearer token from a Claude Code login)
 
     Parameters:
         system (str): The system instructions for the model.
@@ -832,26 +833,31 @@ def call_claude(system: str, user: str, timeout_s: int = None, model: str = None
         raise RuntimeError("Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set")
 
     url = "https://api.anthropic.com/v1/messages"
+    # 300, not 220: the tokenizer of Claude 4.7 and later produces about 30 % more tokens for the same text.
     payload = {
         "model": model,
-        "max_tokens": 220,
+        "max_tokens": 300,
         "system": system,
         "messages": [{"role": "user", "content": user}],
     }
+    # Haiku 5.5 thinks by default, and thinking counts against max_tokens, so the short limit could end
+    # before any text. Haiku 5.5 accepts thinking disabled; Sonnet 5.5 and Opus 5.5 reject it with a 400.
+    if model.startswith("claude-haiku-5"):
+        payload["thinking"] = {"type": "disabled"}
 
     headers = {
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
     }
-    if CLAUDE_OAUTH_TOKEN:
-        headers["Authorization"] = f"Bearer {CLAUDE_OAUTH_TOKEN}"
-    else:
+    if ANTHROPIC_API_KEY:
         headers["x-api-key"] = ANTHROPIC_API_KEY
+    else:
+        headers["Authorization"] = f"Bearer {CLAUDE_OAUTH_TOKEN}"
 
     debug_log(f"Claude request URL: {url}")
     debug_log(f"Claude model: {model}")
     debug_log(f"Claude timeout: {timeout_s}s")
-    debug_log(f"Claude auth: {'oauth' if CLAUDE_OAUTH_TOKEN else 'api-key'}")
+    debug_log(f"Claude auth: {'api-key' if ANTHROPIC_API_KEY else 'oauth'}")
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
@@ -864,7 +870,8 @@ def call_claude(system: str, user: str, timeout_s: int = None, model: str = None
             content = j.get("content", [])
             if not content:
                 raise RuntimeError("Claude response contained no content")
-            text = content[0].get("text", "")
+            # Thinking blocks, when present, come before the text block.
+            text = next((block.get("text", "") for block in content if block.get("type") == "text"), "")
             debug_log(f"Claude extracted text: {text[:500] if text else '(empty)'}")
             if not text:
                 raise RuntimeError("Claude response contained no text output")
