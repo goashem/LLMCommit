@@ -13,9 +13,6 @@
 # Env vars:
 #   OLLAMA_HOST=http://localhost:11434
 #   OLLAMA_MODEL=qwen3:8b
-#   OPENAI_API_KEY=...
-#   OPENAI_MODEL=gpt-6-luna
-#   OPENAI_BASE_URL=https://api.openai.com
 #   GEMINI_API_KEY=...
 #   GEMINI_MODEL=gemini-3.5-flash-lite
 #   ANTHROPIC_API_KEY=...  (or CLAUDE_CODE_OAUTH_TOKEN=...)
@@ -79,12 +76,6 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", _CONFIG.get("ollama_host", "http://l
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", _CONFIG.get("ollama_model", "qwen3:8b"))
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", _CONFIG.get("ollama_timeout", "30")))
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", _CONFIG.get("openai_api_key", "")).strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", _CONFIG.get("openai_model", "gpt-6-luna"))
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", _CONFIG.get("openai_base_url", "https://api.openai.com")).rstrip(
-    "/")
-OPENAI_TIMEOUT = int(os.environ.get("OPENAI_TIMEOUT", _CONFIG.get("openai_timeout", "25")))
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", _CONFIG.get("gemini_api_key", "")).strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", _CONFIG.get("gemini_model", "gemini-3.5-flash-lite"))
 GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", _CONFIG.get("gemini_timeout", "25")))
@@ -98,8 +89,9 @@ CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", _CONFIG.get("claude_timeou
 
 # Provider pipeline order configuration
 # Can be set via environment variable or config file
-# Format: comma-separated list, e.g., "ollama,claude,openai,gemini"
-provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,openai,claude,gemini"))
+# Format: comma-separated list, e.g., "ollama,claude,gemini". OpenAI was removed on 2026-11-02; an
+# "openai" left in a config is skipped as an unknown provider.
+provider_order_str = os.environ.get("LLMCOMMIT_PROVIDERS", _CONFIG.get("providers", "ollama,claude,gemini"))
 PROVIDER_ORDER = [p.strip().lower() for p in provider_order_str.split(",") if p.strip()]
 
 DEBUG = os.environ.get("LLMCOMMIT_DEBUG", "").strip().lower() in ("1", "true", "yes")
@@ -179,15 +171,6 @@ MESSAGE_CONTROL_FLAGS = {"--no-edit", "--reuse-message", "-C", "--reedit-message
 # these: LLMCommit takes it as an alias of --review (main()), so it never reaches git. Nor is -i, which
 # in git is --include, not interactive.
 INTERACTIVE_FLAGS = {"-p", "--patch"}
-
-# OpenAI models that reject max_tokens and take max_completion_tokens instead: the o-series (Chat
-# Completions reference: max_tokens "is not compatible with o-series models") and GPT-5 and GPT-6.
-OPENAI_COMPLETION_TOKENS_MODELS = re.compile(r"^(?:o\d|gpt-[56])")
-# The ones among them that accept reasoning_effort "none" (OpenAI model pages, 2026-10-01). With reasoning
-# off, temperature is accepted again. The rest keep their default effort, which never fails a request:
-# the o-series, gpt-5/-mini/-nano, -pro variants, gpt-6-astra and gpt-6.1-sol (gpt-6-astra answers "none"
-# with HTTP 400). Dated snapshots and other names not listed here are treated the same way.
-OPENAI_EFFORT_NONE_MODELS = re.compile(r"^gpt-(?:5\.\d+(?:-(?:luna|terra|sol|mini|nano))?|6-(?:luna|sol))$")
 
 
 def sanitize_text(s: str) -> str:
@@ -291,7 +274,6 @@ def split_lang_arg(argv: List[str]) -> Tuple[
         - push flag (bool)
         - conventional flag (bool)
         - ollama_model override (Optional[str])
-        - openai_model override (Optional[str])
         - claude_model override (Optional[str])
 
     Raises:
@@ -302,7 +284,6 @@ def split_lang_arg(argv: List[str]) -> Tuple[
     push = False
     conventional = False
     ollama_model = None
-    openai_model = None
     claude_model = None
     out: List[str] = []
     i = 0
@@ -332,8 +313,6 @@ def split_lang_arg(argv: List[str]) -> Tuple[
             # Auto-detect provider based on model name
             if model.startswith("claude-"):
                 claude_model = model
-            elif model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3"):
-                openai_model = model
             else:
                 ollama_model = model
             i += 2
@@ -344,12 +323,6 @@ def split_lang_arg(argv: List[str]) -> Tuple[
             ollama_model = argv[i + 1]
             i += 2
             continue
-        elif argv[i] == "--openai-model":
-            if i + 1 >= len(argv):
-                raise SystemExit("LLMCommit: --openai-model requires a value")
-            openai_model = argv[i + 1]
-            i += 2
-            continue
         elif argv[i] == "--claude-model":
             if i + 1 >= len(argv):
                 raise SystemExit("LLMCommit: --claude-model requires a value")
@@ -358,7 +331,7 @@ def split_lang_arg(argv: List[str]) -> Tuple[
             continue
         out.append(argv[i])
         i += 1
-    return lang, out, addall, push, conventional, ollama_model, openai_model, claude_model
+    return lang, out, addall, push, conventional, ollama_model, claude_model
 
 
 def detect_pathspec(args: List[str]) -> List[str]:
@@ -590,145 +563,6 @@ def call_ollama(system: str, user: str, timeout_s: int = None, model: str = None
         text = (j.get("message") or {}).get("content") or ""
         debug_log(f"Ollama extracted text: {text[:500]}{'...' if len(text) > 500 else ''}")
         return text.strip()
-
-
-def extract_openai_text(j: dict) -> str:
-    """
-    Extracts and returns textual content from OpenAI chat completions response.
-    
-    Args:
-        j: Dictionary containing OpenAI API response.
-
-    Returns:
-        A string containing the extracted text content from the first choice's message.
-        Returns empty string if no content found.
-    """
-    # Standard OpenAI chat completions response format
-    choices = j.get("choices")
-    if isinstance(choices, list) and choices:
-        first_choice = choices[0]
-        if isinstance(first_choice, dict):
-            message = first_choice.get("message")
-            if isinstance(message, dict):
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content.strip()
-
-    # Fallback for alternative response formats
-    return ""
-
-
-def call_openai(system: str, user: str, timeout_s: int = None, model: str = None) -> str:
-    """
-    Call the OpenAI Chat Completions API to generate a response based on provided
-    system instructions and user input. The function constructs a request with a
-    specified timeout, sends it to the OpenAI service, and returns the text output
-    from the response. If the API key is not set or if the response does not include
-    text output, a RuntimeError is raised.
-
-    Parameters:
-        system (str): The instructions for the OpenAI model to follow.
-        user (str): The user input to be processed by the OpenAI model.
-        timeout_s (int): The timeout for the API request in seconds. Defaults to 25.
-        model (str): The OpenAI model to use. Defaults to OPENAI_MODEL.
-
-    Returns:
-        str: The text output from the OpenAI response.
-    """
-    if timeout_s is None:
-        timeout_s = OPENAI_TIMEOUT
-    if model is None:
-        model = OPENAI_MODEL
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    url = f"{OPENAI_BASE_URL}/v1/chat/completions"
-    # A commit message needs no reasoning, so it is turned off where the model allows it. A model that
-    # keeps reasoning needs more tokens for it, and the limit counts reasoning tokens too.
-    uses_completion_tokens = bool(OPENAI_COMPLETION_TOKENS_MODELS.match(model))
-    effort_none = bool(OPENAI_EFFORT_NONE_MODELS.match(model))
-    is_reasoning_model = uses_completion_tokens and not effort_none
-    max_tokens = 2000 if is_reasoning_model else 220
-    token_param = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
-    debug_log(f"Model {model} is_reasoning_model={is_reasoning_model}, {token_param}={max_tokens}")
-
-    # Build proper Chat Completions API payload
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ],
-        token_param: max_tokens
-    }
-    if effort_none:
-        payload["reasoning_effort"] = "none"
-
-    # Reasoning models don't support temperature
-    use_temperature = not is_reasoning_model
-    if use_temperature:
-        payload["temperature"] = 0.2
-    debug_log(f"OpenAI request URL: {url}")
-    debug_log(f"OpenAI model: {model}")
-    debug_log(f"OpenAI timeout: {timeout_s}s")
-    debug_log(f"OpenAI payload (without messages): { {k: v for k, v in payload.items() if k != 'messages'} }")
-    data = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
-    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            debug_log(f"OpenAI raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
-            j = json.loads(raw)
-            text = extract_openai_text(j)
-            debug_log(f"OpenAI extracted text: {text[:500] if text else '(empty)'}")
-            if not text:
-                raise RuntimeError("OpenAI response contained no text output")
-            return text.strip()
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")
-            error_data = json.loads(body)
-        except Exception:
-            error_data = {}
-
-        debug_log(f"OpenAI HTTP {e.code} body: {body}")
-
-        # Only retry for temperature-specific errors
-        if e.code == 400 and use_temperature and body:
-            try:
-                error_message = error_data.get("error", {}).get("message", "").lower()
-                if "temperature" in error_message or "not supported" in error_message:
-                    print(f"LLMCommit: Model {model} does not support temperature, retrying without it.",
-                          file=sys.stderr)
-                    payload.pop("temperature", None)
-                    debug_log(
-                        f"OpenAI retry payload (without input): { {k: v for k, v in payload.items() if k != 'input'} }")
-                    data = json.dumps(payload).encode("utf-8")
-                    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-                    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                        raw = resp.read().decode("utf-8", errors="replace")
-                        debug_log(f"OpenAI retry raw response: {raw[:2000]}{'...' if len(raw) > 2000 else ''}")
-                        j = json.loads(raw)
-                        text = extract_openai_text(j)
-                        debug_log(f"OpenAI retry extracted text: {text[:500] if text else '(empty)'}")
-                        if not text:
-                            raise RuntimeError("OpenAI response contained no text output")
-                        return text.strip()
-            except Exception:
-                pass
-
-        # Provide helpful error messages for common issues
-        if e.code == 429:
-            raise RuntimeError(f"OpenAI rate limit exceeded. Please try again later.")
-        elif e.code == 401:
-            raise RuntimeError(f"OpenAI authentication failed. Check your OPENAI_API_KEY.")
-        elif e.code == 404:
-            raise RuntimeError(f"OpenAI model '{model}' not found. Check OPENAI_MODEL setting.")
-
-        raise RuntimeError(f"OpenAI HTTP {e.code}: {error_data.get('error', {}).get('message', body or e.reason)}")
 
 
 def call_gemini(system: str, user: str, timeout_s: int = None) -> str:
@@ -984,9 +818,8 @@ def main() -> int:
     commit message generation is deemed appropriate, it attempts to generate a
     commit message using the following services in order:
     1. Ollama (local)
-    2. OpenAI (cloud)
-    3. Claude (cloud)
-    4. Gemini (cloud, final fallback)
+    2. Claude (cloud)
+    3. Gemini (cloud, final fallback)
 
     That is the default order. LLMCOMMIT_PROVIDERS or the "providers" config key
     changes it, and a cloud service without a key is skipped.
@@ -1010,11 +843,10 @@ def main() -> int:
         print("LLMCommit: not inside a git repository.", file=sys.stderr)
         return 4
 
-    lang, git_args, addall, push, conventional, ollama_model_override, openai_model_override, claude_model_override = split_lang_arg(
+    lang, git_args, addall, push, conventional, ollama_model_override, claude_model_override = split_lang_arg(
         sys.argv[1:])
     debug_log(f"Language: {lang}, git_args: {git_args}, addall: {addall}, push: {push}, conventional: {conventional}")
-    debug_log(
-        f"Model overrides: ollama={ollama_model_override}, openai={openai_model_override}, claude={claude_model_override}")
+    debug_log(f"Model overrides: ollama={ollama_model_override}, claude={claude_model_override}")
 
     # If --addall is specified, add all untracked files that are not in .gitignore
     if addall:
@@ -1107,26 +939,6 @@ def main() -> int:
             except Exception as e:
                 debug_log(f"Ollama failed: {e}")
                 providers_tried.append("ollama (failed)")
-            finally:
-                spinner.stop()
-
-        elif provider == "openai":
-            if not OPENAI_API_KEY:
-                debug_log("Skipping OpenAI (no API key)")
-                continue
-            debug_log("Trying OpenAI...")
-            spinner = Spinner("Generating commit message (OpenAI)")
-            spinner.start()
-            try:
-                msg = retry_with_backoff(lambda: call_openai(system, user, model=openai_model_override))
-                debug_log(f"OpenAI returned message length: {len(msg)}")
-                providers_tried.append("openai")
-            except Exception as e:
-                debug_log(f"OpenAI failed: {e}")
-                providers_tried.append("openai (failed)")
-                # Only fail hard on non-final provider if it's a critical error
-                if provider == PROVIDER_ORDER[-1]:
-                    print(f"LLMCommit: OpenAI call failed: {e}", file=sys.stderr)
             finally:
                 spinner.stop()
 

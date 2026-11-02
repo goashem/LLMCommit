@@ -71,9 +71,6 @@ def tearDownModule():
 
 # --- a recording stand-in for urlopen ------------------------------------------------------------
 
-OPENAI_REPLY = {"choices": [{"message": {"role": "assistant", "content": "Update notes"}}]}
-
-
 class Reply:
     """The part of an HTTP response that the call_* functions use."""
 
@@ -101,64 +98,15 @@ def recorder(reply):
     return requests, urlopen
 
 
-# --- call_openai() -------------------------------------------------------------------------------
+# --- OpenAI removed ------------------------------------------------------------------------------
 
-class OpenAIRequest(unittest.TestCase):
+class OpenAIRemoved(unittest.TestCase):
+    """Jarmo 2.11.2026: OpenAI is no longer used anywhere, so LLMCommit has no OpenAI client."""
 
-    def send(self, model=None):
-        """The JSON body call_openai() posts for model (None = the default)."""
-        requests, urlopen = recorder(OPENAI_REPLY)
-        with (mock.patch.object(LLMCommit, "OPENAI_API_KEY", "placeholder"),
-              mock.patch("urllib.request.urlopen", urlopen)):
-            self.assertEqual(LLMCommit.call_openai("system", "user", model=model), "Update notes")
-        self.assertEqual(len(requests), 1)
-        return requests[0][1]
-
-    def test_model_argument_reaches_the_request(self):
-        # --openai-model and --model gpt-... arrive here as the model argument.
-        self.assertEqual(self.send(model="gpt-4.1-mini")["model"], "gpt-4.1-mini")
-
-    def test_default_model_is_gpt_6_luna(self):
-        self.assertEqual(LLMCommit.OPENAI_MODEL, "gpt-6-luna")
-        self.assertEqual(self.send()["model"], "gpt-6-luna")
-
-    def test_o_series_gpt_5_and_gpt_6_get_max_completion_tokens(self):
-        # Chat Completions reference: max_tokens "is not compatible with o-series models".
-        for model in ("o1", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "gpt-5.6-terra", "gpt-6-luna",
-                      "gpt-6-astra", "gpt-6.1-sol"):
-            with self.subTest(model=model):
-                payload = self.send(model)
-                self.assertIn("max_completion_tokens", payload)
-                self.assertNotIn("max_tokens", payload)
-
-    def test_older_chat_models_keep_max_tokens_and_temperature(self):
-        # Control. OpenAI-compatible servers behind OPENAI_BASE_URL may not know max_completion_tokens.
-        for model in ("gpt-4o-mini", "gpt-4.1"):
-            with self.subTest(model=model):
-                payload = self.send(model)
-                self.assertEqual((payload.get("max_tokens"), payload.get("temperature")), (220, 0.2))
-                self.assertNotIn("max_completion_tokens", payload)
-                self.assertNotIn("reasoning_effort", payload)
-
-    def test_reasoning_is_turned_off_where_the_model_allows_it(self):
-        # A commit message needs no reasoning, and with reasoning_effort "none" temperature is accepted
-        # again (OpenAI: "When reasoning effort is not none, remove temperature, top_p, and top_logprobs").
-        for model in ("gpt-6-luna", "gpt-6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini"):
-            with self.subTest(model=model):
-                payload = self.send(model)
-                self.assertEqual(payload.get("reasoning_effort"), "none")
-                self.assertEqual(payload.get("temperature"), 0.2)
-                self.assertEqual(payload.get("max_completion_tokens"), 220)
-
-    def test_models_without_effort_none_keep_reasoning_and_get_no_temperature(self):
-        # None of these accepts "none" (OpenAI model pages 2026-10-01; gpt-6-astra answers HTTP 400), and a
-        # reasoning model rejects temperature. They keep their default effort and get room for it.
-        for model in ("o3-mini", "gpt-5", "gpt-5-mini", "gpt-5.2-pro", "gpt-6-astra", "gpt-6.1-sol"):
-            with self.subTest(model=model):
-                payload = self.send(model)
-                self.assertNotIn("reasoning_effort", payload)
-                self.assertNotIn("temperature", payload)
-                self.assertEqual(payload.get("max_completion_tokens"), 2000)
+    def test_there_is_no_openai_client_or_setting(self):
+        for name in ("call_openai", "extract_openai_text", "OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(LLMCommit, name))
 
 
 # --- call_ollama() -------------------------------------------------------------------------------
@@ -352,11 +300,12 @@ def header_comment_values():
 class Defaults(unittest.TestCase):
 
     def test_pipeline_tries_ollama_first_and_the_rest_in_their_old_order(self):
-        self.assertEqual(LLMCommit.PROVIDER_ORDER, ["ollama", "openai", "claude", "gemini"])
+        # openai was second until 2.11.2026, when it was removed.
+        self.assertEqual(LLMCommit.PROVIDER_ORDER, ["ollama", "claude", "gemini"])
 
     def test_readme_environment_table_matches_the_code(self):
         rows = readme_env_defaults()
-        for name, value in {"OLLAMA_MODEL": LLMCommit.OLLAMA_MODEL, "OPENAI_MODEL": LLMCommit.OPENAI_MODEL,
+        for name, value in {"OLLAMA_MODEL": LLMCommit.OLLAMA_MODEL,
                             "GEMINI_MODEL": LLMCommit.GEMINI_MODEL, "CLAUDE_MODEL": LLMCommit.CLAUDE_MODEL,
                             "LLMCOMMIT_PROVIDERS": ",".join(LLMCommit.PROVIDER_ORDER)}.items():
             with self.subTest(name=name):
@@ -364,14 +313,19 @@ class Defaults(unittest.TestCase):
 
     def test_readme_config_example_uses_the_default_models(self):
         example = readme_config_example()
-        for key, value in {"ollama_model": LLMCommit.OLLAMA_MODEL, "openai_model": LLMCommit.OPENAI_MODEL,
+        for key, value in {"ollama_model": LLMCommit.OLLAMA_MODEL,
                            "claude_model": LLMCommit.CLAUDE_MODEL, "gemini_model": LLMCommit.GEMINI_MODEL}.items():
             with self.subTest(key=key):
                 self.assertEqual(example.get(key), value)
 
+    def test_readme_documents_no_openai_setting(self):
+        self.assertEqual([name for name in readme_env_defaults() if name.startswith("OPENAI_")], [])
+        self.assertEqual([key for key in readme_config_example() if key.startswith("openai_")], [])
+        self.assertEqual([name for name in header_comment_values() if name.startswith("OPENAI_")], [])
+
     def test_header_comment_matches_the_code(self):
         values = header_comment_values()
-        for name in ("OLLAMA_MODEL", "OPENAI_MODEL", "GEMINI_MODEL", "CLAUDE_MODEL"):
+        for name in ("OLLAMA_MODEL", "GEMINI_MODEL", "CLAUDE_MODEL"):
             with self.subTest(name=name):
                 self.assertEqual(values.get(name), getattr(LLMCommit, name))
 
@@ -422,11 +376,12 @@ class TempRepo(unittest.TestCase):
         shutil.rmtree(self.repo, ignore_errors=True)
         shutil.rmtree(self.no_hooks, ignore_errors=True)
 
-    def run_main(self, *args, providers=("openai",)):
+    def run_main(self, *args, providers=("claude",), reply=CLAUDE_REPLY):
         """Runs main() with a recording urlopen; returns (exit code, recorded requests)."""
-        requests, urlopen = recorder(OPENAI_REPLY)
+        requests, urlopen = recorder(reply)
         with (mock.patch.object(LLMCommit, "PROVIDER_ORDER", list(providers)),
-              mock.patch.object(LLMCommit, "OPENAI_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "CLAUDE_OAUTH_TOKEN", ""),
               mock.patch("urllib.request.urlopen", urlopen),
               mock.patch.object(sys, "argv", ["llmcommit", *args])):
             rc = LLMCommit.main()
@@ -435,15 +390,22 @@ class TempRepo(unittest.TestCase):
 
 class ModelFlags(TempRepo):
 
-    def test_openai_model_flag_reaches_the_request(self):
-        rc, requests = self.run_main("-a", "--openai-model", "gpt-4.1-mini")
+    def test_model_flag_with_a_claude_name_reaches_the_claude_request(self):
+        rc, requests = self.run_main("-a", "--model", "claude-sonnet-5-5")
         self.assertEqual(rc, 0)
-        self.assertEqual([body["model"] for _url, body in requests], ["gpt-4.1-mini"])
+        self.assertEqual([body["model"] for _url, body in requests], ["claude-sonnet-5-5"])
 
-    def test_model_flag_with_a_gpt_name_reaches_the_openai_request(self):
-        rc, requests = self.run_main("-a", "--model", "gpt-4.1-mini")
+    def test_model_flag_with_a_gpt_name_goes_to_ollama(self):
+        # gpt-oss is an Ollama model. Until 2.11.2026 every gpt-* name was sent to OpenAI instead.
+        rc, requests = self.run_main("-a", "--model", "gpt-oss:20b", providers=("ollama",), reply=OLLAMA_REPLY)
         self.assertEqual(rc, 0)
-        self.assertEqual([body["model"] for _url, body in requests], ["gpt-4.1-mini"])
+        self.assertEqual([body["model"] for _url, body in requests], ["gpt-oss:20b"])
+
+    def test_openai_left_in_a_configured_order_is_skipped(self):
+        # ~/.llmcommit.json or LLMCOMMIT_PROVIDERS may still name openai after its removal.
+        rc, requests = self.run_main("-a", providers=("openai", "claude"))
+        self.assertEqual(rc, 0)
+        self.assertEqual([url for url, _body in requests], ["https://api.anthropic.com/v1/messages"])
 
 
 class ReviewFlag(TempRepo):
@@ -502,7 +464,8 @@ class IncludeFlag(TempRepo):
         self.assertFalse(opened.exists(), "git opened the editor: no message was generated")
         self.assertEqual(rc, 0)
         self.assertEqual(len(requests), 1)
-        self.assertIn(self.CHANGE, requests[0][1]["messages"][1]["content"])
+        # Claude's payload: the system prompt is a field of its own, so the user message is the first one.
+        self.assertIn(self.CHANGE, requests[0][1]["messages"][0]["content"])
         self.assertEqual(git("log", "-1", "--format=%s").strip(), "Update notes")
 
 

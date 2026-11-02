@@ -1,7 +1,7 @@
 # LLMCommit
 
-A `git commit` wrapper that writes commit messages for you. Tries your local Ollama first, then falls back to OpenAI,
-Claude and Gemini, in that order.
+A `git commit` wrapper that writes commit messages for you. Tries your local Ollama first, then falls back to Claude
+and Gemini, in that order.
 
 ## What it does
 
@@ -32,7 +32,6 @@ llmcommit -a --push
 - Python 3.9+
 - At least one of:
     - Ollama running locally (default: `http://localhost:11434`, model: `qwen3:8b`)
-    - OpenAI API key (`OPENAI_API_KEY`)
     - Anthropic API key (`ANTHROPIC_API_KEY`) or Claude Code login token (`CLAUDE_CODE_OAUTH_TOKEN`)
     - Gemini API key (`GEMINI_API_KEY`)
 
@@ -48,7 +47,6 @@ llmcommit -a --push
 | `--conventional`        | Use conventional commits format              |
 | `--model <name>`        | Override model (auto-detects provider)       |
 | `--ollama-model <name>` | Force a specific Ollama model                |
-| `--openai-model <name>` | Force a specific OpenAI model                |
 | `--claude-model <name>` | Force a specific Claude model                |
 | `--dry-run`             | Show what would happen, don't commit         |
 | `--amend`               | Amend the previous commit                    |
@@ -64,10 +62,6 @@ Standard `git commit` flags pass through.
 | `OLLAMA_HOST`             | `http://localhost:11434`      |                                          |
 | `OLLAMA_MODEL`            | `qwen3:8b`                    |                                          |
 | `OLLAMA_TIMEOUT`          | `30`                          | seconds                                  |
-| `OPENAI_API_KEY`          | -                             | required for OpenAI fallback             |
-| `OPENAI_MODEL`            | `gpt-6-luna`                  | sent with reasoning off where supported  |
-| `OPENAI_BASE_URL`         | `https://api.openai.com`      | for OpenAI-compatible APIs               |
-| `OPENAI_TIMEOUT`          | `25`                          | seconds                                  |
 | `CLAUDE_CODE_OAUTH_TOKEN` | -                             | Claude, used only without an API key     |
 | `ANTHROPIC_API_KEY`       | -                             | Claude, wins when both are set           |
 | `CLAUDE_MODEL`            | `claude-haiku-5-5`            | sent with thinking disabled              |
@@ -75,7 +69,7 @@ Standard `git commit` flags pass through.
 | `GEMINI_API_KEY`          | -                             | required for Gemini fallback             |
 | `GEMINI_MODEL`            | `gemini-3.5-flash-lite`       | sent with minimal thinking               |
 | `GEMINI_TIMEOUT`          | `25`                          | seconds                                  |
-| `LLMCOMMIT_PROVIDERS`     | `ollama,openai,claude,gemini` | order to try providers                   |
+| `LLMCOMMIT_PROVIDERS`     | `ollama,claude,gemini`        | order to try providers                   |
 | `LLMCOMMIT_DEBUG`         | -                             | set to 1 for verbose logs                |
 
 ### Config files
@@ -87,7 +81,6 @@ Put a `.llmcommit.json` in your home directory or project root:
   "ollama_host": "http://localhost:11434",
   "ollama_model": "qwen3:8b",
   "ollama_timeout": 30,
-  "openai_model": "gpt-6-luna",
   "claude_model": "claude-haiku-5-5",
   "gemini_model": "gemini-3.5-flash-lite"
 }
@@ -101,7 +94,7 @@ Change which providers are tried and in what order:
 
 ```bash
 # Skip Ollama, cloud only
-export LLMCOMMIT_PROVIDERS="openai,claude,gemini"
+export LLMCOMMIT_PROVIDERS="claude,gemini"
 
 # Local only, no cloud
 export LLMCOMMIT_PROVIDERS="ollama"
@@ -167,7 +160,7 @@ llmcommit --conventional
 llmcommit -a --conventional --review --push
 
 # Custom model
-llmcommit --model gpt-6-sol
+llmcommit --model claude-sonnet-5-5
 llmcommit --ollama-model llama3:70b
 
 # Debug
@@ -196,11 +189,6 @@ the message from being generated.
 - Check it's running: `ollama serve`
 - Check the model exists: `ollama list`
 - Pull if needed: `ollama pull qwen3:8b`
-
-**OpenAI failing**
-
-- Check `OPENAI_API_KEY` is set
-- Verify it at https://platform.openai.com/api-keys
 
 **Claude failing**
 
@@ -248,7 +236,7 @@ request is independent.
 
 ## Contributing
 
-Keep it a single file with zero dependencies. Test all four providers. Update the README if you add features.
+Keep it a single file with zero dependencies. Test all three providers. Update the README if you add features.
 
 ## Licence
 
@@ -258,6 +246,8 @@ Open source. Use it however you want.
 
 ### Latest
 
+- Removed the OpenAI provider and `--openai-model` (2026-11-02); `--model gpt-oss:*` now goes to Ollama, and an
+  `openai` left in `LLMCOMMIT_PROVIDERS` or the config is skipped
 - Interactive review mode (`--review`)
 - Conventional commits (`--conventional`)
 - Config file support (`.llmcommit.json`)

@@ -221,13 +221,13 @@ class OutboundPrompt(unittest.TestCase):
     def run_main(self, *args):
         prompts = []
 
-        def fake_openai(system, user, timeout_s=None, model=None):
+        def fake_claude(system, user, timeout_s=None, model=None):
             prompts.append(system + "\n" + user)
             return "Update notes"
 
-        with (mock.patch.object(LLMCommit, "PROVIDER_ORDER", ["openai"]),
-              mock.patch.object(LLMCommit, "OPENAI_API_KEY", "placeholder"),
-              mock.patch.object(LLMCommit, "call_openai", fake_openai),
+        with (mock.patch.object(LLMCommit, "PROVIDER_ORDER", ["claude"]),
+              mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "call_claude", fake_claude),
               mock.patch("urllib.request.urlopen", side_effect=AssertionError("network call in a test")),
               mock.patch.object(sys, "argv", ["llmcommit", *args])):
             rc = LLMCommit.main()
