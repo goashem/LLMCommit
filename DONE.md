@@ -141,15 +141,14 @@ OLLAMA_TIMEOUT=60 llmcommit -a
 ---
 
 ### 10. Retry Logic with Exponential Backoff
-**Location:** [`LLMCommit.py`](LLMCommit.py)
+**Location:** [`LLMCommit.py`](LLMCommit.py) (`retry_with_backoff`)
 
 **Feature:**
-- Automatic retry for transient failures
-- Exponential backoff (1s, 2s, 4s delays)
-- Handles network errors, timeouts, and rate limits (429)
-- Max 3 retries per provider
+- Automatic retry for transient HTTP failures: 429 and 5xx, alike for Ollama, Gemini and Claude
+- Exponential backoff: 1 s, then 2 s (max 3 attempts per provider)
+- Not retried: other 4xx, refused connections and timeouts; the next provider is tried at once
 
-**Impact:** Much more reliable API calls, especially on unstable networks.
+**Impact:** A rate limit or overload no longer ends a provider's turn at the first answer.
 
 ---
 
@@ -158,7 +157,7 @@ OLLAMA_TIMEOUT=60 llmcommit -a
 
 **Features:**
 - Specific error messages for common issues:
-  - Rate limit exceeded (429)
+  - 429 and 5xx are retried first; if all three attempts fail, the HTTP status line is shown
   - Authentication failed (401)
   - Model not found (404)
 - Intelligent error parsing from API responses
