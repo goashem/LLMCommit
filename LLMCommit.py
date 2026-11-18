@@ -718,8 +718,9 @@ def call_claude(system: str, user: str, timeout_s: int = None, model: str = None
         except Exception:
             error_data = {}
         debug_log(f"Claude HTTP {e.code} body: {body}")
-        if e.code == 429:
-            raise RuntimeError("Claude rate limit exceeded. Please try again later.")
+        if e.code == 429 or 500 <= e.code < 600:
+            # Transient: stays an HTTPError, so retry_with_backoff() can read the status code.
+            raise
         elif e.code == 401:
             raise RuntimeError("Claude authentication failed. Check your CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY.")
         elif e.code == 404:

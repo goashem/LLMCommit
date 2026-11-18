@@ -278,6 +278,72 @@ class ClaudeRequest(unittest.TestCase):
         self.assertIsNone(req.get_header("X-api-key"))
 
 
+# --- retries through each provider ---------------------------------------------------------------
+
+class ProviderRetries(unittest.TestCase):
+    """retry_with_backoff() as main() applies it, over each provider's own call_*() function.
+
+    Requests are counted at urlopen: call_gemini() and call_claude() raise before any request when a key is
+    missing, so a check on the sleeps alone would pass for a retry that never reached the network."""
+
+    REPLIES = {"ollama": OLLAMA_REPLY, "gemini": GEMINI_REPLY, "claude": CLAUDE_REPLY}
+    CALLS = {"ollama": lambda: LLMCommit.call_ollama("system", "user"),
+             "gemini": lambda: LLMCommit.call_gemini("system", "user"),
+             "claude": lambda: LLMCommit.call_claude("system", "user")}
+
+    def attempts(self, provider, *answers):
+        """retry_with_backoff() over the provider's call while urlopen gives the answers in turn.
+
+        An answer that is an exception is raised, anything else is the JSON reply.
+        Returns (the result or the exception raised, number of requests, delays slept)."""
+        requests = []
+
+        def urlopen(req, timeout=None):
+            answer = answers[len(requests)]
+            requests.append(req.full_url)
+            if isinstance(answer, BaseException):
+                raise answer
+            return Reply(answer)
+
+        with (mock.patch.object(LLMCommit, "GEMINI_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "CLAUDE_OAUTH_TOKEN", ""),
+              mock.patch("urllib.request.urlopen", urlopen),
+              mock.patch.object(LLMCommit.time, "sleep") as sleep):
+            try:
+                result = LLMCommit.retry_with_backoff(self.CALLS[provider])
+            except Exception as e:
+                result = e
+        return result, len(requests), [c.args[0] for c in sleep.call_args_list]
+
+    def test_rate_limit_and_server_errors_are_retried_after_1_s_then_2_s(self):
+        # 529 is Anthropic's "overloaded". Claude's 429 and 5xx used to reach the retry as RuntimeError.
+        for provider, reply in self.REPLIES.items():
+            for code in (429, 500, 503, 529):
+                with self.subTest(provider=provider, code=code):
+                    answers = [http_error(code), http_error(code), reply]
+                    self.assertEqual(self.attempts(provider, *answers), ("Update notes", 3, [1.0, 2.0]))
+
+    def test_gives_up_after_three_requests_and_the_status_code_is_kept(self):
+        for provider in self.REPLIES:
+            for code in (429, 503):
+                with self.subTest(provider=provider, code=code):
+                    result, requests, delays = self.attempts(provider, *[http_error(code)] * 3)
+                    self.assertEqual((getattr(result, "code", result), requests, delays), (code, 3, [1.0, 2.0]))
+
+    def test_other_client_errors_are_tried_once(self):
+        for provider in self.REPLIES:
+            for code in (400, 401, 403, 404):
+                with self.subTest(provider=provider, code=code):
+                    _, requests, delays = self.attempts(provider, *[http_error(code)] * 3)
+                    self.assertEqual((requests, delays), (1, []))
+
+    def test_claude_keeps_its_readable_messages_for_a_bad_key_and_a_missing_model(self):
+        for code, text in ((401, "authentication failed"), (404, "not found")):
+            with self.subTest(code=code):
+                self.assertIn(text, str(self.attempts("claude", http_error(code))[0]))
+
+
 # --- defaults and the places that document them --------------------------------------------------
 
 def readme_env_defaults():
@@ -406,6 +472,40 @@ class ModelFlags(TempRepo):
         rc, requests = self.run_main("-a", providers=("openai", "claude"))
         self.assertEqual(rc, 0)
         self.assertEqual([url for url, _body in requests], ["https://api.anthropic.com/v1/messages"])
+
+
+class RateLimitedClaude(TempRepo):
+    """The failure as llmcommit shows it: Claude answers 429 once, and the commit must still be made."""
+
+    def test_the_second_request_gets_through(self):
+        answers = [http_error(429), Reply(CLAUDE_REPLY)]
+        requests = []
+        delays = []
+        real_sleep = LLMCommit.time.sleep
+
+        def urlopen(req, timeout=None):
+            requests.append(req.full_url)
+            answer = answers.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        def sleep(seconds):
+            # Only the retry delay is skipped: the spinner ticks every 0.1 s on a thread of its own.
+            if seconds >= 1:
+                delays.append(seconds)
+            else:
+                real_sleep(seconds)
+
+        with (mock.patch.object(LLMCommit, "PROVIDER_ORDER", ["claude"]),
+              mock.patch.object(LLMCommit, "ANTHROPIC_API_KEY", "placeholder"),
+              mock.patch.object(LLMCommit, "CLAUDE_OAUTH_TOKEN", ""),
+              mock.patch("urllib.request.urlopen", urlopen),
+              mock.patch.object(LLMCommit.time, "sleep", sleep),
+              mock.patch.object(sys, "argv", ["llmcommit", "-a"])):
+            rc = LLMCommit.main()
+        self.assertEqual((rc, len(requests), delays), (0, 2, [1.0]))
+        self.assertEqual(git("log", "-1", "--format=%s").strip(), "Update notes")
 
 
 class ReviewFlag(TempRepo):
